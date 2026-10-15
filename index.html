@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0a1020">
+  <meta name="description" content="EDGE NSE — research-first Indian cash-equity screening, swing-trade planning, CSV analysis and portfolio risk tools.">
+  <title>EDGE NSE — Trading Research Terminal</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#" aria-label="EDGE NSE home">
+        <span class="brand-mark">E<span>+</span></span>
+        <span class="brand-copy"><strong>EDGE <em>NSE</em></strong><small>RESEARCH TERMINAL</small></span>
+      </a>
+      <div class="workspace-label">WORKSPACE</div>
+      <nav class="nav-list" aria-label="Main navigation">
+        <button class="nav-item active" data-view="overview"><span class="nav-icon">▦</span> Overview</button>
+        <button class="nav-item" data-view="scanner"><span class="nav-icon">⌕</span> Stock scanner <span class="nav-count" id="scannerNavCount">0</span></button>
+        <button class="nav-item" data-view="risk"><span class="nav-icon">◈</span> Risk calculator</button>
+        <button class="nav-item" data-view="ledger"><span class="nav-icon">☷</span> Paper ledger</button>
+        <button class="nav-item" data-view="data"><span class="nav-icon">⇧</span> Data & research</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="mode-card">
+          <span class="mode-dot"></span>
+          <div><strong>Research mode</strong><small>No live orders enabled</small></div>
+        </div>
+        <div class="side-footer"><span class="pulse-dot"></span> Browser-based workspace <span class="version">v0.1</span></div>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div class="mobile-brand"><span class="brand-mark">E<span>+</span></span><strong>EDGE NSE</strong></div>
+        <button class="mobile-menu" id="mobileMenu" aria-label="Toggle menu">☰</button>
+        <div class="breadcrumb"><span>Workspace</span><b>/</b><strong id="pageCrumb">Overview</strong></div>
+        <div class="topbar-right">
+          <span class="market-pill"><i></i> NSE CASH · RESEARCH</span>
+          <button class="icon-button" id="helpBtn" aria-label="Help">?</button>
+          <div class="avatar">EN</div>
+        </div>
+      </header>
+
+      <div class="content">
+        <section class="view active" id="view-overview">
+          <div class="page-heading">
+            <div><div class="eyebrow">MONDAY-TO-FRIDAY · RESEARCH WORKSPACE</div><h1>Trading overview<span class="heading-period">.</span></h1><p class="subheading">A disciplined view of candidates, risk and research readiness.</p></div>
+            <div class="heading-actions"><span class="data-status"><i></i><span id="dataStatusText">Demo dataset loaded</span></span><button class="button button-primary" data-go="data">＋ Import market data</button></div>
+          </div>
+          <div class="notice notice-warning"><span class="notice-symbol">!</span><div><strong>Research environment — not a live trading terminal</strong><p>Demo values are synthetic. Upload your own historical OHLCV CSV to analyze real data. No broker connection or order execution is active.</p></div><button class="notice-close" aria-label="Dismiss notice" id="dismissNotice">×</button></div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><div class="metric-top"><span>UNIVERSE</span><span class="metric-icon violet">▦</span></div><div class="metric-value" id="universeMetric">—</div><div class="metric-foot"><span class="metric-muted">Target research universe</span><span class="metric-tag neutral">Configured target</span></div></article>
+            <article class="metric-card"><div class="metric-top"><span>QUALIFIED SETUPS</span><span class="metric-icon green">⌁</span></div><div class="metric-value" id="setupsMetric">08</div><div class="metric-foot"><span class="metric-muted">From currently loaded data</span><span class="metric-tag positive">Ranked</span></div></article>
+            <article class="metric-card"><div class="metric-top"><span>OPEN PAPER POSITIONS</span><span class="metric-icon blue">◈</span></div><div class="metric-value" id="positionsMetric">00</div><div class="metric-foot"><span class="metric-muted">Local paper ledger</span><span class="metric-tag neutral">No live exposure</span></div></article>
+            <article class="metric-card"><div class="metric-top"><span>READINESS GATE</span><span class="metric-icon amber">⛨</span></div><div class="metric-value status-value">NOT READY</div><div class="metric-foot"><span class="metric-muted">Evidence required before live use</span><span class="metric-tag warning">Research only</span></div></article>
+          </div>
+
+          <div class="section-row"><div><h2>Candidate radar</h2><p>Highest-ranked signals from the loaded dataset</p></div><button class="text-button" data-go="scanner">Open full scanner <span>↗</span></button></div>
+          <div class="panel candidate-panel">
+            <div class="panel-toolbar"><div class="tab-group" id="overviewTabs"><button class="tab active" data-filter="all">All setups</button><button class="tab" data-filter="breakout">Breakout</button><button class="tab" data-filter="pullback">Pullback</button><button class="tab" data-filter="relative_strength">Relative strength</button></div><span class="table-note" id="candidateCount">Showing candidates</span></div>
+            <div class="table-wrap"><table><thead><tr><th>SYMBOL</th><th>SETUP</th><th>LAST CLOSE</th><th>RSI (14)</th><th>REL. VOLUME</th><th>EDGE SCORE</th><th>STATUS</th></tr></thead><tbody id="candidateTable"></tbody></table></div><div class="empty-state hidden" id="overviewEmpty">No candidates qualify on the latest available bar. With synthetic demo data, this is expected: the demo does not manufacture trade signals. Upload genuine, validated history to research real setups.</div>
+            <div class="table-bottom"><span id="tableFootnote">Illustrative demo data · not a recommendation</span><button class="button button-small button-secondary" data-go="scanner">View all candidates</button></div>
+          </div>
+
+          <div class="lower-grid">
+            <section class="panel chart-panel"><div class="panel-heading"><div><h2>Research performance</h2><p>Upload backtest results to replace demo curve</p></div><span class="mini-label">ILLUSTRATIVE</span></div><div class="chart-legend"><span><i class="legend-line"></i> Equity curve</span><span><i class="legend-line dashed"></i> Initial capital</span></div><div class="chart-wrap"><canvas id="equityChart" aria-label="Illustrative equity curve" role="img"></canvas></div><div class="chart-foot"><span>Not a verified backtest</span><button class="text-button" data-go="data">Import results ↗</button></div></section>
+            <section class="panel readiness-panel"><div class="panel-heading"><div><h2>Release checklist</h2><p>Evidence gates for real-money readiness</p></div><span class="readiness-ring">!</span></div><div class="readiness-progress"><div><span>Required evidence</span><strong id="gateCount">0 / 6</strong></div><div class="progress-track"><span id="gateProgress"></span></div></div><div class="checklist">
+              <label><input type="checkbox" data-gate="data"><span class="check-box"></span><span>Data lineage verified</span><small>Pending</small></label>
+              <label><input type="checkbox" data-gate="baseline"><span class="check-box"></span><span>Baseline reproduced</span><small>Pending</small></label>
+              <label><input type="checkbox" data-gate="costs"><span class="check-box"></span><span>Costs & slippage validated</span><small>Pending</small></label>
+              <label><input type="checkbox" data-gate="oos"><span class="check-box"></span><span>Out-of-sample edge verified</span><small>Pending</small></label>
+              <label><input type="checkbox" data-gate="paper"><span class="check-box"></span><span>Paper fills reconciled</span><small>Pending</small></label>
+              <label><input type="checkbox" data-gate="approval"><span class="check-box"></span><span>Human release approval</span><small>Pending</small></label>
+            </div><div class="gate-warning">Checklist is a local planning aid, not authorization to trade. Live execution remains disabled.</div></section>
+          </div>
+          <footer class="page-footer"><span>EDGE NSE <b>·</b> Built for research discipline</span><span>Data source: <strong id="sourceFooter">Synthetic demo data</strong></span></footer>
+        </section>
+
+        <section class="view" id="view-scanner">
+          <div class="page-heading"><div><div class="eyebrow">DISCOVERY ENGINE</div><h1>Stock scanner<span class="heading-period">.</span></h1><p class="subheading">Screen and rank candidates using transparent, configurable technical rules.</p></div><div class="heading-actions"><button class="button button-secondary" id="exportSignals">↓ Export signals</button><button class="button button-primary" data-go="data">＋ Load CSV</button></div></div>
+          <div class="filter-panel panel"><div class="filter-field"><label for="strategyFilter">STRATEGY</label><select id="strategyFilter"><option value="all">All strategies</option><option value="breakout">Breakout momentum</option><option value="pullback">Trend pullback</option><option value="relative_strength">Relative strength</option></select></div><div class="filter-field"><label for="minScore">MINIMUM EDGE SCORE</label><select id="minScore"><option value="0">All scores</option><option value="35">35+</option><option value="50">50+</option><option value="65">65+</option></select></div><div class="filter-field"><label for="sortSignals">SORT BY</label><select id="sortSignals"><option value="score">Edge score</option><option value="volume">Relative volume</option><option value="rsi">RSI</option><option value="symbol">Symbol A–Z</option></select></div><button class="button button-primary filter-apply" id="applyFilters">Apply filters ↗</button></div>
+          <div class="scanner-summary"><div><span class="summary-label">MATCHING CANDIDATES</span><strong id="scanMatches">—</strong></div><div><span class="summary-label">DATA AS OF</span><strong id="scanAsOf">—</strong></div><div><span class="summary-label">SIGNAL ENGINE</span><strong>Rule-based · v0.1</strong></div><div><span class="summary-label">EXECUTION STATUS</span><strong class="not-ready-text">Disabled</strong></div></div>
+          <div class="panel"><div class="panel-toolbar"><div><h2>Ranked candidates</h2><p>Score is a heuristic ranking, not probability of profit.</p></div><span class="table-note">Cash equities only</span></div><div class="table-wrap"><table><thead><tr><th>RANK</th><th>SYMBOL</th><th>STRATEGY</th><th>CLOSE</th><th>RSI</th><th>REL. VOL.</th><th>STOP EST.</th><th>EDGE SCORE</th><th>ACTION</th></tr></thead><tbody id="scannerTable"></tbody></table></div><div class="empty-state hidden" id="scannerEmpty">No candidates meet the selected filters.</div></div>
+          <div class="disclaimer-line">Signals are calculated from completed bars in the uploaded dataset. No live quotes are fetched. Validate every candidate independently.</div>
+        </section>
+
+        <section class="view" id="view-risk">
+          <div class="page-heading"><div><div class="eyebrow">PORTFOLIO GUARDRAILS</div><h1>Risk calculator<span class="heading-period">.</span></h1><p class="subheading">Calculate position size from planned risk, stop distance and capital limits.</p></div></div>
+          <div class="risk-layout"><section class="panel calculator-panel"><div class="panel-heading"><div><h2>Position sizing</h2><p>Cash-equity planning calculator</p></div><span class="mini-label">NO LEVERAGE</span></div><div class="form-grid"><div class="input-field"><label for="capitalInput">ACCOUNT EQUITY (₹)</label><input id="capitalInput" type="number" min="1" value="1000000"></div><div class="input-field"><label for="riskInput">RISK PER TRADE (%)</label><input id="riskInput" type="number" min="0.01" max="2" step="0.05" value="0.25"></div><div class="input-field"><label for="entryInput">PLANNED ENTRY (₹)</label><input id="entryInput" type="number" min="0.01" step="0.05" value="500"></div><div class="input-field"><label for="stopInput">STOP-LOSS (₹)</label><input id="stopInput" type="number" min="0.01" step="0.05" value="480"></div><div class="input-field"><label for="targetInput">TARGET (₹) · OPTIONAL</label><input id="targetInput" type="number" min="0" step="0.05" value="540"></div><div class="input-field"><label for="costInput">EST. TOTAL COST (%)</label><input id="costInput" type="number" min="0" step="0.01" value="0.15"></div></div><button class="button button-primary calculate-button" id="calculateRisk">Calculate position size ↗</button><p class="small-note">Costs are an estimate. Replace with your broker-specific charges and slippage. Gap losses can exceed the planned stop risk.</p></section>
+          <section class="panel result-panel"><div class="panel-heading"><div><h2>Trade plan</h2><p>Calculated from your inputs</p></div><span class="metric-icon green">◈</span></div><div class="risk-result"><span>PLANNED RISK BUDGET</span><strong id="riskBudget">₹2,500</strong><small id="riskPercentLabel">0.25% of equity</small></div><div class="result-list"><div><span>Risk per share</span><strong id="riskPerShare">₹20.00</strong></div><div><span>Suggested quantity</span><strong id="riskQty">125 shares</strong></div><div><span>Position value</span><strong id="positionValue">₹62,500</strong></div><div><span>Estimated round-trip costs</span><strong id="estimatedCosts">₹93.75</strong></div><div><span>Target reward / risk</span><strong id="rrRatio">2.00×</strong></div><div><span>Approx. net loss at stop</span><strong class="negative" id="netStopLoss">−₹2,594</strong></div></div><div class="result-alert" id="riskAlert">Position size is an estimate. Confirm exposure, liquidity and gaps before considering a trade.</div><button class="button button-secondary full-width" id="saveRiskPlan">＋ Save to paper ledger</button></section></div>
+          <section class="panel guardrail-panel"><div class="panel-heading"><div><h2>Default guardrails</h2><p>Starting research assumptions — not guarantees of safety</p></div></div><div class="guardrail-grid"><div><span>Risk per trade</span><strong>0.25%</strong><small>Of account equity</small></div><div><span>Aggregate open risk</span><strong>1.5%</strong><small>Initial research cap</small></div><div><span>Max positions</span><strong>5</strong><small>Correlation still matters</small></div><div><span>Holding period</span><strong>2–10 days</strong><small>Intraday tracked separately</small></div></div></section>
+        </section>
+
+        <section class="view" id="view-ledger">
+          <div class="page-heading"><div><div class="eyebrow">RESEARCH JOURNAL</div><h1>Paper ledger<span class="heading-period">.</span></h1><p class="subheading">Record planned trades and review the paper workflow. Saved locally in this browser only.</p></div><div class="heading-actions"><button class="button button-secondary" id="exportLedger">↓ Export ledger</button><button class="button button-primary" data-go="scanner">＋ Add candidate</button></div></div>
+          <div class="notice notice-info"><span class="notice-symbol">i</span><div><strong>Local browser storage</strong><p>Ledger entries stay in this browser on this device. Export backups regularly. They are not sent to a broker or synced to other devices.</p></div></div>
+          <div class="metric-grid ledger-metrics"><article class="metric-card"><div class="metric-top"><span>PLANNED TRADES</span><span class="metric-icon blue">☷</span></div><div class="metric-value" id="ledgerTotal">0</div><div class="metric-foot"><span class="metric-muted">Paper-only records</span></div></article><article class="metric-card"><div class="metric-top"><span>OPEN / PLANNED</span><span class="metric-icon amber">◷</span></div><div class="metric-value" id="ledgerOpen">0</div><div class="metric-foot"><span class="metric-muted">Awaiting outcome</span></div></article><article class="metric-card"><div class="metric-top"><span>REALIZED PAPER P&L</span><span class="metric-icon green">↗</span></div><div class="metric-value" id="ledgerPnl">₹0</div><div class="metric-foot"><span class="metric-muted">Manual outcome entries only</span></div></article><article class="metric-card"><div class="metric-top"><span>LIVE ORDERS</span><span class="metric-icon amber">⛨</span></div><div class="metric-value status-value">DISABLED</div><div class="metric-foot"><span class="metric-muted">No broker integration</span></div></article></div>
+          <div class="panel"><div class="panel-toolbar"><div><h2>Trade journal</h2><p>Use status and realized P&L to review your decisions.</p></div><button class="button button-small button-secondary" id="clearLedger">Clear local ledger</button></div><div class="table-wrap"><table><thead><tr><th>DATE ADDED</th><th>SYMBOL</th><th>STRATEGY</th><th>ENTRY</th><th>STOP</th><th>QTY</th><th>STATUS</th><th>REALIZED P&L</th><th></th></tr></thead><tbody id="ledgerTable"></tbody></table></div><div class="empty-state hidden" id="ledgerEmpty">No paper trades yet. Add a candidate from the scanner or save a position-sizing plan.</div></div>
+        </section>
+
+        <section class="view" id="view-data">
+          <div class="page-heading"><div><div class="eyebrow">DATA FOUNDATION</div><h1>Data & research<span class="heading-period">.</span></h1><p class="subheading">Load historical bars and inspect data quality before running the browser screener.</p></div></div>
+          <div class="upload-grid"><section class="panel upload-panel"><div class="panel-heading"><div><h2>Import historical OHLCV</h2><p>Combined CSV · one row per symbol and session</p></div><span class="metric-icon violet">⇧</span></div><label class="dropzone" for="csvUpload" id="dropzone"><span class="upload-icon">↑</span><strong>Choose a CSV file</strong><span>or drag and drop it here</span><small>Required: date, symbol, open, high, low, close, volume</small><input id="csvUpload" type="file" accept=".csv,text/csv"></label><div class="upload-actions"><button class="button button-primary" id="loadDemo">Load synthetic demo</button><button class="button button-secondary" id="downloadTemplate">↓ Download CSV template</button></div><div class="small-note">The importer recognizes standard OHLCV CSVs and common NSE old/new bhavcopy columns. If a Series column exists, only EQ rows are imported. Comma-grouped numeric cells must be quoted by the CSV, e.g. &quot;1,50,000&quot;. Prefer YYYY-MM-DD for dates; ambiguous slash dates are rejected. Demo prices are synthetic and never evidence of profitability.</div><div class="validation-list upload-feedback hidden" id="uploadFeedback" role="alert" aria-live="polite"></div></section>
+          <section class="panel data-status-panel"><div class="panel-heading"><div><h2>Data health</h2><p>Structural checks only</p></div><span class="mini-label" id="dataHealthBadge">DEMO</span></div><div class="data-kpis"><div><span>Rows loaded</span><strong id="dataRows">1,280</strong></div><div><span>Symbols</span><strong id="dataSymbols">4</strong></div><div><span>Start date</span><strong id="dataStart">2023-01-02</strong></div><div><span>End date</span><strong id="dataEnd">2024-03-22</strong></div></div><div class="validation-list" id="validationList"><div class="validation-item"><span class="validation-icon">!</span><span>Source authenticity not verified</span><small>Warning</small></div><div class="validation-item"><span class="validation-icon">!</span><span>Corporate-action adjustments unknown</span><small>Warning</small></div><div class="validation-item"><span class="validation-icon">!</span><span>Point-in-time universe unknown</span><small>Warning</small></div></div></section></div>
+          <section class="panel research-panel"><div class="panel-heading"><div><h2>Research protocol</h2><p>Required before interpreting any results</p></div><span class="mini-label">VALIDATION</span></div><div class="protocol-grid"><div><span class="protocol-num">01</span><h3>Reproduce control</h3><p>Reproduce the existing EDGE strategy and preserve its exact universe and assumptions.</p></div><div><span class="protocol-num">02</span><h3>Walk-forward test</h3><p>Use chronological splits and keep a final holdout untouched until rules are frozen.</p></div><div><span class="protocol-num">03</span><h3>Model real costs</h3><p>Include taxes, charges, spread, slippage, gaps and plausible fills.</p></div><div><span class="protocol-num">04</span><h3>Paper-trade</h3><p>Reconcile timestamped signals and simulated fills with executable prices.</p></div></div><div class="gate-warning">This static website does not reproduce the Python backtest engine. Use the separate Python project for full research simulations.</div></section>
+          <footer class="page-footer"><span>EDGE NSE <b>·</b> Data-first research</span><span>All imported files are processed in your browser.</span></footer>
+        </section>
+      </div>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <dialog id="helpDialog"><div class="dialog-head"><div><span class="eyebrow">QUICK GUIDE</span><h2>Using EDGE NSE</h2></div><button class="icon-button" id="closeHelp" aria-label="Close">×</button></div><p>1. Load historical OHLCV data from a licensed source.</p><p>2. Review structural validation warnings and scan candidate setups.</p><p>3. Use the risk calculator to plan a trade, then log it as paper-only.</p><p>4. Validate strategy performance in the separate Python backtesting project.</p><div class="notice notice-warning"><span class="notice-symbol">!</span><div><strong>No live data or order execution</strong><p>Scores are heuristic. No recommendation or profit guarantee is made.</p></div></div><button class="button button-primary full-width" id="closeHelpBottom">Got it</button></dialog>
+  <script src="app.js"></script>
+</body>
+</html>
