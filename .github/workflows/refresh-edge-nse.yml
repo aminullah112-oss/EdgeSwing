@@ -1,0 +1,79 @@
+name: Refresh EDGE NSE research screen
+
+on:
+  schedule:
+    # After the NSE cash-market close and typical end-of-day report publication.
+    - cron: "30 20 * * 1-5"
+      timezone: "Asia/Kolkata"
+  workflow_dispatch:
+    inputs:
+      force_backfill:
+        description: "Rebuild up to 260 sessions from NSE archives (slower; use for initial setup or recovery)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: edge-nse-eod-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download, validate, analyze and screen NSE cash equities
+        env:
+          FORCE_BACKFILL: ${{ inputs.force_backfill || 'false' }}
+        run: python .github/scripts/update_nse_data.py
+
+      - name: Commit latest history and scan results
+        if: always() && !cancelled()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/history.csv data/latest_screen.json data/last_run.json
+          if git diff --cached --quiet; then
+            echo "No changes in history or screen output."
+          else
+            git commit -m "Refresh automated NSE EOD screen"
+            git push
+          fi
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Assemble static website artifact
+        run: |
+          rm -rf _site
+          mkdir -p _site/assets _site/data
+          cp index.html app.js styles.css .nojekyll _site/
+          cp -R assets/. _site/assets/
+          cp data/latest_screen.json _site/data/latest_screen.json
+
+      - name: Upload website artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+      - name: Deploy refreshed website to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

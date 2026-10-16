@@ -6,3 +6,7 @@
 
 /* Import feedback is separate from the active dataset health panel. */
 .upload-feedback{margin:14px 18px 0;padding:12px;border:1px solid #70424d;border-radius:10px;background:#2a1922;display:grid;gap:9px}.upload-feedback .validation-icon{background:#5a2632;color:#ffd1d8}.upload-feedback .validation-item{align-items:flex-start;color:#ffdce1}.upload-feedback .validation-item small{color:#ff9fac;white-space:nowrap}.upload-feedback details{color:#e1b5bd;font-size:10px}.upload-feedback summary{cursor:pointer;font-weight:700}.upload-feedback pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto;margin:8px 0 0;padding:10px;border-radius:7px;background:#1a1017;color:#efcfd4;font:10px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+
+/* Automated EOD pipeline status banner */
+#autoPipelineNotice{align-items:flex-start;gap:12px}#autoPipelineNotice .auto-pipeline-copy{flex:1;min-width:0}#autoPipelineNotice .button{margin-left:auto;flex-shrink:0;align-self:center}#autoPipelineNotice strong{color:#c5e4ff}#autoPipelineNotice p{color:#9db7d3;overflow-wrap:anywhere}
+@media(max-width:540px){#autoPipelineNotice{flex-wrap:wrap}#autoPipelineNotice .button{margin-left:33px;align-self:flex-start}}

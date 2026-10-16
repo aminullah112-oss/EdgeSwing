@@ -6,7 +6,7 @@
   const fmtNum = (n,d=2) => Number.isFinite(n) ? n.toLocaleString("en-IN",{maximumFractionDigits:d,minimumFractionDigits:d}) : "—";
   const escapeHtml = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const todayISO = () => new Date().toISOString().slice(0,10);
-  const state = { bars: [], candidates: [], source:"Synthetic demo data", demo:true, lastDate:"—", strategy:"all", ledger:[], gates:{}, currentPlan:null };
+  const state = { bars: [], candidates: [], source:"Synthetic demo data", demo:true, autoMode:false, autoMeta:null, lastDate:"—", strategy:"all", ledger:[], gates:{}, currentPlan:null };
   const STORAGE_LEDGER = "edgeNsePaperLedgerV1";
   const STORAGE_GATES = "edgeNseResearchGatesV1";
   let toastTimer;
@@ -183,13 +183,15 @@
     const rows=latest.filter(r=>state.strategy==="all"||r.strategy===state.strategy).slice(0,8);
     renderCandidateRows(rows,"#candidateTable",false);
     $("#overviewEmpty").classList.toggle("hidden",rows.length>0);
-    $("#overviewEmpty").textContent=state.demo&&state.candidates.length===0
-      ?"No candidates qualify on the latest synthetic bar. This is expected: demo data is designed to test the interface, not manufacture trade signals. Upload genuine validated history to research setups."
-      :"No candidates qualify for this overview filter on the latest available bar. Open the scanner, adjust filters, or upload more validated history.";
+    $("#overviewEmpty").textContent=state.autoMode&&state.candidates.length===0
+      ?"The automated pipeline has no qualified setups to show for the latest completed session, or the data-readiness gate is not satisfied. This can be a valid outcome. Review Data & research for freshness, history length, benchmark status and corporate-action warnings."
+      :state.demo&&state.candidates.length===0
+        ?"No candidates qualify on the latest synthetic bar. This is expected: demo data is designed to test the interface, not manufacture trade signals. The scheduled pipeline will replace demo data after its first successful run."
+        :"No candidates qualify for this overview filter on the latest available bar. Open the scanner, adjust filters, or upload more validated history.";
     $("#setupsMetric").textContent=String(latest.length).padStart(2,"0");
     $("#positionsMetric").textContent=String(state.ledger.filter(x=>x.status==="Planned"||x.status==="Open").length).padStart(2,"0");
     $("#candidateCount").textContent=`Showing ${rows.length} of ${latest.length}`;
-    $("#tableFootnote").textContent=state.demo?"Synthetic demo data · not a recommendation":"Uploaded CSV · technical rules only";
+    $("#tableFootnote").textContent=state.autoMode?`Automated NSE EOD screen · ${state.autoMeta?.latest_market_date||state.lastDate} · technical rules only`:state.demo?"Synthetic demo data · not a recommendation":"Uploaded CSV · technical rules only";
     drawEquityChart();
   }
   function renderScanner(){
@@ -202,11 +204,13 @@
     $("#scanAsOf").textContent=state.lastDate;
     renderCandidateRows(rows,"#scannerTable",true);
     $("#scannerEmpty").classList.toggle("hidden",rows.length>0);
-    $("#scannerEmpty").textContent=state.demo&&state.candidates.length===0
-      ?"The scanner is working. Synthetic demo data does not intentionally create a latest-bar trade setup, so zero candidates is expected. Upload genuine historical OHLCV data with at least 200 sessions per symbol and sufficient turnover to screen candidates."
-      :state.candidates.length===0
-        ?"No setup qualifies on the latest bar. Check the data end date, 200-session trend history and ₹1 crore minimum 20-day average turnover; this screener does not display stale historical signals."
-        :"No candidates meet these filters. Try a lower score threshold or choose another strategy.";
+    $("#scannerEmpty").textContent=state.autoMode&&state.candidates.length===0
+      ?"The automated screen currently has no qualified candidates. Check pipeline status, history length, benchmark availability and data warnings in Data & research. Zero signals can be a legitimate result."
+      :state.demo&&state.candidates.length===0
+        ?"The scanner is working. Synthetic demo data does not intentionally create a latest-bar trade setup. The scheduled pipeline will publish NSE EOD results after its first successful run."
+        :state.candidates.length===0
+          ?"No setup qualifies on the latest bar. Check the data end date, 200-session trend history and ₹1 crore minimum 20-day average turnover; this screener does not display stale historical signals."
+          :"No candidates meet these filters. Try a lower score threshold or choose another strategy.";
   }
   function drawEquityChart(){
     const canvas=$("#equityChart");if(!canvas)return;
@@ -245,6 +249,7 @@
   }
   function setBars(bars,source,demo=false){
     clearUploadFeedback();
+    state.autoMode=false;state.autoMeta=null;
     state.bars=bars;state.source=source;state.demo=demo;
     const dates=bars.map(r=>r.date).sort();state.lastDate=dates[dates.length-1]||"—";
     state.candidates=computeCandidates(bars);
@@ -254,6 +259,78 @@
     $("#scannerNavCount").textContent=String(state.candidates.length);
     renderDataHealth(bars);renderOverview();renderScanner();
     toast(demo?"Synthetic demo loaded. Do not use as market evidence.":"CSV loaded and browser screening completed.");
+  }
+  function renderAutomatedPipelineNotice(payload, loadError=""){
+    const statusEl=$("#autoPipelineState"),detailsEl=$("#autoPipelineDetails");
+    if(!statusEl||!detailsEl)return;
+    if(loadError){statusEl.textContent="Feed unavailable";detailsEl.textContent="Could not load data/latest_screen.json. The interface remains usable in demo or manual CSV mode. Check GitHub Pages publication and the Actions run.";return;}
+    const status=payload?.status||"awaiting_first_run";
+    const date=payload?.latest_market_date||"not available yet";
+    const candidates=Number(payload?.qualified_count)||0;
+    if(status==="ready"){
+      statusEl.textContent=`Ready · ${candidates} candidate(s)`;
+      detailsEl.textContent=`NSE EOD data through ${date}. Last pipeline build: ${payload.generated_at_utc||"time unavailable"}. Sources: official NSE CM-UDiFF cash-equity bhavcopy and NSE NIFTY 50 history where available. Weekday refresh is scheduled for 20:30 India time; GitHub Actions can be delayed. No live orders.`;
+      $("#demoWarning")?.classList.add("hidden");
+    }else if(status==="warming_up"){
+      statusEl.textContent="Building history";
+      detailsEl.textContent=`Stored equity history through ${date}; ${payload.trading_sessions||0} sessions available. The SMA200-based screen stays in warming-up state until the data gate is met. Review warnings below.`;
+      $("#demoWarningTitle").textContent="Research only — automated history is incomplete";
+      $("#demoWarningText").textContent="Qualified setups are suppressed until the required historical-data gate is met. No broker connection or orders are enabled.";
+      $("#demoWarning")?.classList.remove("hidden");
+    }else if(status==="stale"){
+      statusEl.textContent="Data stale · check feed";
+      detailsEl.textContent=`Latest stored equity session is ${date}. Results are suppressed until data freshness is restored. Open Data & research for source warnings.`;
+      $("#demoWarningTitle").textContent="Data freshness check failed";
+      $("#demoWarningText").textContent="Do not interpret the last stored scan as a current shortlist. This site still has no broker connection or order execution.";
+      $("#demoWarning")?.classList.remove("hidden");
+    }else if(status==="source_unavailable"){
+      statusEl.textContent="Source unavailable";
+      detailsEl.textContent="The pipeline has not acquired a usable history yet. Inspect the GitHub Actions log, verify source access, and manually rerun the workflow. Synthetic values are not market evidence.";
+      $("#demoWarning")?.classList.remove("hidden");
+    }else{
+      statusEl.textContent="Waiting for first run";
+      detailsEl.textContent="After you publish this repository, GitHub Actions downloads official NSE end-of-day bhavcopy files on weekdays, builds a rolling history, calculates indicators and publishes the latest qualifying setups. First run builds the historical lookback; allow it to complete.";
+    }
+  }
+  function renderAutomatedHealth(payload){
+    $("#dataRows").textContent=Number(payload.bars_count||0).toLocaleString("en-IN");
+    $("#dataSymbols").textContent=Number(payload.symbols_count||0).toLocaleString("en-IN");
+    $("#dataStart").textContent=payload.history_start||"—";
+    $("#dataEnd").textContent=payload.latest_market_date||"—";
+    const ready=payload.status==="ready";
+    $("#dataHealthBadge").textContent=ready?"AUTO · READY":payload.status==="stale"?"AUTO · STALE":"AUTO · WARMING";
+    $("#dataHealthBadge").style.color=ready?"var(--green)":"var(--amber)";
+    const warnings=Array.isArray(payload.warnings)?payload.warnings:[];
+    const counts=[
+      `${Number(payload.trading_sessions||0).toLocaleString("en-IN")} stored equity sessions.`,
+      `${Number(payload.eligible_symbols||0).toLocaleString("en-IN")} current symbols evaluated; ${Number(payload.symbols_with_200_sessions||0).toLocaleString("en-IN")} have at least 200 sessions.`,
+      `${Number(payload.symbols_over_turnover_floor||0).toLocaleString("en-IN")} pass the ₹1 crore 20-session average-turnover floor.`,
+      `NIFTY 50 benchmark latest session: ${payload.benchmark_latest_date||"missing"}.`,
+      `${Number(payload.qualified_count||0).toLocaleString("en-IN")} qualified setup(s) in the published output.`
+    ];
+    const all=[...counts,...warnings];
+    $("#validationList").innerHTML=all.map((msg,i)=>`<div class="validation-item"><span class="validation-icon">${i<counts.length?"i":"!"}</span><span>${escapeHtml(msg)}</span><small>${i<counts.length?"Info":"Review"}</small></div>`).join("");
+  }
+  async function loadAutomatedScreen(){
+    try{
+      const response=await fetch(`data/latest_screen.json?refresh=${Date.now()}`,{cache:"no-store"});
+      if(!response.ok)throw new Error(`HTTP ${response.status}`);
+      const payload=await response.json();
+      renderAutomatedPipelineNotice(payload);
+      if(!["ready","warming_up","stale"].includes(payload.status))return;
+      state.autoMode=true;state.autoMeta=payload;state.demo=false;state.source="Automated NSE EOD pipeline";state.bars=[];
+      state.lastDate=payload.latest_market_date||"—";
+      const sourceCandidates=payload.status==="ready"&&Array.isArray(payload.candidates)?payload.candidates:[];
+      state.candidates=sourceCandidates.map(r=>({...r,relVol:Number(r.rel_vol),atr:Number(r.atr14_sma),avgTurn:Number(r.avg_turnover_20d),momentum60:Number(r.return_60d)/100}));
+      $("#dataStatusText").textContent=payload.status==="ready"?`NSE EOD · ${payload.latest_market_date||"date unavailable"}`:`Pipeline · ${payload.status}`;
+      $("#sourceFooter").textContent="Automated NSE EOD pipeline";
+      $("#universeMetric").textContent=Number(payload.eligible_symbols||0).toLocaleString("en-IN");
+      $("#scannerNavCount").textContent=String(state.candidates.length);
+      $("#setupsMetric").textContent=String(state.candidates.length).padStart(2,"0");
+      renderAutomatedHealth(payload);renderOverview();renderScanner();
+    }catch(error){
+      renderAutomatedPipelineNotice(null,String(error?.message||error));
+    }
   }
   function syntheticData(){
     const bars=[];const start=new Date("2023-01-02T00:00:00Z");
@@ -308,7 +385,7 @@
   }
   function csvFor(rows){if(!rows.length)return "";const cols=Object.keys(rows[0]);const cell=v=>{const s=String(v??"");return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};return [cols.join(","),...rows.map(r=>cols.map(c=>cell(r[c])).join(","))].join("\n");}
   function init(){
-    loadLocal();setBars(syntheticData(),"Synthetic demo data",true);calcRisk();
+    loadLocal();setBars(syntheticData(),"Synthetic demo data",true);calcRisk();loadAutomatedScreen();
     $$(".nav-item").forEach(b=>b.addEventListener("click",()=>navigate(b.dataset.view)));
     $$("[data-go]").forEach(b=>b.addEventListener("click",()=>navigate(b.dataset.go)));
     $("#mobileMenu").addEventListener("click",()=>$("#sidebar").classList.toggle("open"));

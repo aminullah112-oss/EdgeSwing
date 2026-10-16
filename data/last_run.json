@@ -1,0 +1,4 @@
+{
+  "status": "awaiting_first_run",
+  "message": "The scheduled workflow writes ingestion counts, download errors and screen status after its first run."
+}

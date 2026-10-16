@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "status": "awaiting_first_run",
+  "source": "NSE CM-UDiFF Common Bhavcopy (EQ series) + NSE daily NIFTY 50 snapshot (historical API fallback)",
+  "source_urls": {
+    "equity_bhavcopy": "https://www.nseindia.com/all-reports",
+    "index_daily_snapshots": "https://www.nseindia.com/all-reports",
+    "index_history_fallback": "https://www.nseindia.com/reports-indices-historical-index-data"
+  },
+  "generated_at_utc": null,
+  "as_of_ist": null,
+  "latest_market_date": null,
+  "history_start": null,
+  "trading_sessions": 0,
+  "bars_count": 0,
+  "symbols_count": 0,
+  "eligible_symbols": 0,
+  "symbols_with_200_sessions": 0,
+  "symbols_over_turnover_floor": 0,
+  "stale_symbols_skipped": 0,
+  "corporate_action_flagged_symbols": 0,
+  "benchmark_latest_date": null,
+  "qualified_count": 0,
+  "strategy_counts": {"breakout": 0, "pullback": 0, "relative_strength": 0},
+  "filters": {},
+  "warnings": [
+    "The automated GitHub Actions pipeline has not completed its first run yet.",
+    "Synthetic demo values remain visible until the first successful run; do not treat them as market data."
+  ],
+  "candidates": []
+}
