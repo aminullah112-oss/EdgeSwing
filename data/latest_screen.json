@@ -1,31 +1,338 @@
 {
   "schema_version": 1,
-  "status": "awaiting_first_run",
+  "status": "ready",
   "source": "NSE CM-UDiFF Common Bhavcopy (EQ series) + NSE daily NIFTY 50 snapshot (historical API fallback)",
   "source_urls": {
     "equity_bhavcopy": "https://www.nseindia.com/all-reports",
     "index_daily_snapshots": "https://www.nseindia.com/all-reports",
     "index_history_fallback": "https://www.nseindia.com/reports-indices-historical-index-data"
   },
-  "generated_at_utc": null,
-  "as_of_ist": null,
-  "latest_market_date": null,
-  "history_start": null,
-  "trading_sessions": 0,
-  "bars_count": 0,
-  "symbols_count": 0,
-  "eligible_symbols": 0,
-  "symbols_with_200_sessions": 0,
-  "symbols_over_turnover_floor": 0,
-  "stale_symbols_skipped": 0,
-  "corporate_action_flagged_symbols": 0,
-  "benchmark_latest_date": null,
-  "qualified_count": 0,
-  "strategy_counts": {"breakout": 0, "pullback": 0, "relative_strength": 0},
-  "filters": {},
+  "generated_at_utc": "2026-10-16T08:02:33+00:00",
+  "as_of_ist": "2026-10-16T13:32:33+05:30",
+  "latest_market_date": "2026-10-15",
+  "history_start": "2025-09-25",
+  "trading_sessions": 260,
+  "bars_count": 633077,
+  "symbols_count": 2974,
+  "eligible_symbols": 2675,
+  "symbols_with_200_sessions": 2000,
+  "symbols_over_turnover_floor": 1400,
+  "stale_symbols_skipped": 299,
+  "corporate_action_flagged_symbols": 134,
+  "benchmark_latest_date": "2026-10-15",
+  "qualified_count": 17,
+  "strategy_counts": {
+    "breakout": 6,
+    "pullback": 4,
+    "relative_strength": 12
+  },
+  "filters": {
+    "min_avg_turnover_20_sessions_inr": 10000000.0,
+    "trend": "close > SMA50 > SMA200",
+    "breakout": "close > prior 20-session high; relative volume >= 1.5; RSI 52-72",
+    "pullback": "uptrend; close above EMA20 within 2.5%; prior close at/below prior EMA20; RSI 42-62",
+    "relative_strength": "60-session return > NIFTY 50; uptrend; new 20-session high",
+    "stop_estimate": "close - 2 × simple-average ATR(14)"
+  },
   "warnings": [
-    "The automated GitHub Actions pipeline has not completed its first run yet.",
-    "Synthetic demo values remain visible until the first successful run; do not treat them as market data."
+    "134 symbol(s) with a close move of at least 40% are excluded until adjusted history is reviewed: AASTHA (1 move(s)), ABANSENT (1 move(s)), ABINFRA (1 move(s)), AGIIL (1 move(s)), AHCL (1 move(s)), AIIL (1 move(s)), AJMERA (1 move(s)), ALLCARGO (1 move(s)), ANANDRATHI (1 move(s)), ANGELONE (1 move(s)), AQYLON (1 move(s)), ARROWGREEN (1 move(s)) ….",
+    "Daily bhavcopy prices may be unadjusted for splits/bonuses. Corporate-action flags are conservative exclusions, not automatic adjustments.",
+    "Screening is EOD-only and rule-based. Scores are not profit probabilities; no orders are sent."
   ],
-  "candidates": []
+  "candidates": [
+    {
+      "symbol": "OAL",
+      "date": "2026-10-15",
+      "strategy": "breakout",
+      "strategies": [
+        "breakout",
+        "relative_strength"
+      ],
+      "close": 579.15,
+      "rsi": 69.4557,
+      "rel_vol": 16.5372,
+      "score": 93,
+      "stop": 516.8357,
+      "atr14_sma": 31.1571,
+      "avg_turnover_20d": 106518395.8,
+      "return_60d": 66.4,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "BLUSPRING",
+      "date": "2026-10-15",
+      "strategy": "relative_strength",
+      "strategies": [
+        "relative_strength"
+      ],
+      "close": 172.68,
+      "rsi": 72.238,
+      "rel_vol": 3.1053,
+      "score": 89,
+      "stop": 148.2643,
+      "atr14_sma": 12.2079,
+      "avg_turnover_20d": 146358773.55,
+      "return_60d": 59.74,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "PAUSHAKLTD",
+      "date": "2026-10-15",
+      "strategy": "breakout",
+      "strategies": [
+        "breakout",
+        "relative_strength"
+      ],
+      "close": 790.0,
+      "rsi": 66.3509,
+      "rel_vol": 16.9846,
+      "score": 81,
+      "stop": 706.4714,
+      "atr14_sma": 41.7643,
+      "avg_turnover_20d": 179599581.98,
+      "return_60d": 39.81,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "SOUTHBANK",
+      "date": "2026-10-15",
+      "strategy": "breakout",
+      "strategies": [
+        "breakout",
+        "relative_strength"
+      ],
+      "close": 51.48,
+      "rsi": 66.9615,
+      "rel_vol": 4.1671,
+      "score": 81,
+      "stop": 47.9229,
+      "atr14_sma": 1.7786,
+      "avg_turnover_20d": 903150710.81,
+      "return_60d": 8.88,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "SKYGOLD",
+      "date": "2026-10-15",
+      "strategy": "relative_strength",
+      "strategies": [
+        "relative_strength"
+      ],
+      "close": 1001.45,
+      "rsi": 80.3007,
+      "rel_vol": 2.2621,
+      "score": 78,
+      "stop": 919.1,
+      "atr14_sma": 41.175,
+      "avg_turnover_20d": 1314863090.56,
+      "return_60d": 52.71,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "TECHM",
+      "date": "2026-10-15",
+      "strategy": "breakout",
+      "strategies": [
+        "breakout",
+        "relative_strength"
+      ],
+      "close": 1650.0,
+      "rsi": 65.3145,
+      "rel_vol": 3.347,
+      "score": 69,
+      "stop": 1555.8857,
+      "atr14_sma": 47.0571,
+      "avg_turnover_20d": 4006804784.39,
+      "return_60d": 4.68,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "HATSUN",
+      "date": "2026-10-15",
+      "strategy": "pullback",
+      "strategies": [
+        "pullback"
+      ],
+      "close": 1145.6,
+      "rsi": 53.353,
+      "rel_vol": 1.7917,
+      "score": 66,
+      "stop": 1061.4,
+      "atr14_sma": 42.1,
+      "avg_turnover_20d": 37405011.65,
+      "return_60d": 23.38,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "SHREEJISPG",
+      "date": "2026-10-15",
+      "strategy": "relative_strength",
+      "strategies": [
+        "relative_strength"
+      ],
+      "close": 835.15,
+      "rsi": 85.8646,
+      "rel_vol": 0.9779,
+      "score": 65,
+      "stop": 802.7286,
+      "atr14_sma": 16.2107,
+      "avg_turnover_20d": 714544730.86,
+      "return_60d": 36.43,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "SHYAMMETL",
+      "date": "2026-10-15",
+      "strategy": "relative_strength",
+      "strategies": [
+        "relative_strength"
+      ],
+      "close": 1157.0,
+      "rsi": 69.1089,
+      "rel_vol": 0.8977,
+      "score": 64,
+      "stop": 1091.3571,
+      "atr14_sma": 32.8214,
+      "avg_turnover_20d": 661609115.16,
+      "return_60d": 8.88,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "PRINCEPIPE",
+      "date": "2026-10-15",
+      "strategy": "breakout",
+      "strategies": [
+        "breakout",
+        "relative_strength"
+      ],
+      "close": 276.55,
+      "rsi": 58.8405,
+      "rel_vol": 1.7723,
+      "score": 58,
+      "stop": 255.7429,
+      "atr14_sma": 10.4036,
+      "avg_turnover_20d": 47879157.99,
+      "return_60d": 4.42,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "COHANCE",
+      "date": "2026-10-15",
+      "strategy": "pullback",
+      "strategies": [
+        "pullback"
+      ],
+      "close": 459.95,
+      "rsi": 55.6583,
+      "rel_vol": 2.1025,
+      "score": 57,
+      "stop": 426.3929,
+      "atr14_sma": 16.7786,
+      "avg_turnover_20d": 566221596.77,
+      "return_60d": 3.21,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "EDELWEISS",
+      "date": "2026-10-15",
+      "strategy": "pullback",
+      "strategies": [
+        "pullback"
+      ],
+      "close": 134.47,
+      "rsi": 51.8036,
+      "rel_vol": 0.4307,
+      "score": 56,
+      "stop": 123.8986,
+      "atr14_sma": 5.2857,
+      "avg_turnover_20d": 855032416.16,
+      "return_60d": 11.4,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "AARTIIND",
+      "date": "2026-10-15",
+      "strategy": "relative_strength",
+      "strategies": [
+        "relative_strength"
+      ],
+      "close": 505.05,
+      "rsi": 56.9026,
+      "rel_vol": 1.3754,
+      "score": 48,
+      "stop": 467.2786,
+      "atr14_sma": 18.8857,
+      "avg_turnover_20d": 290023613.04,
+      "return_60d": 1.11,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "ICICIBANK",
+      "date": "2026-10-15",
+      "strategy": "breakout",
+      "strategies": [
+        "breakout"
+      ],
+      "close": 1389.4,
+      "rsi": 57.7521,
+      "rel_vol": 1.779,
+      "score": 42,
+      "stop": 1334.7857,
+      "atr14_sma": 27.3071,
+      "avg_turnover_20d": 13202759092.49,
+      "return_60d": -5.04,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "PHOENIXLTD",
+      "date": "2026-10-15",
+      "strategy": "pullback",
+      "strategies": [
+        "pullback"
+      ],
+      "close": 1917.2,
+      "rsi": 52.5417,
+      "rel_vol": 1.0302,
+      "score": 29,
+      "stop": 1806.7571,
+      "atr14_sma": 55.2214,
+      "avg_turnover_20d": 929615159.37,
+      "return_60d": -8.32,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "LIQUIDCASE",
+      "date": "2026-10-15",
+      "strategy": "relative_strength",
+      "strategies": [
+        "relative_strength"
+      ],
+      "close": 116.39,
+      "rsi": 100.0,
+      "rel_vol": 1.5592,
+      "score": 27,
+      "stop": 116.3129,
+      "atr14_sma": 0.0386,
+      "avg_turnover_20d": 2559474205.88,
+      "return_60d": 1.12,
+      "benchmark_return_60d": -4.92
+    },
+    {
+      "symbol": "LIQUIDSHRI",
+      "date": "2026-10-15",
+      "strategy": "relative_strength",
+      "strategies": [
+        "relative_strength"
+      ],
+      "close": 1125.77,
+      "rsi": 99.9432,
+      "rel_vol": 1.0509,
+      "score": 23,
+      "stop": 1125.3129,
+      "atr14_sma": 0.2286,
+      "avg_turnover_20d": 11771195.6,
+      "return_60d": 1.07,
+      "benchmark_return_60d": -4.92
+    }
+  ]
 }
