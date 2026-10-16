@@ -141,6 +141,36 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("ABC", flagged)
         self.assertEqual(flagged["ABC"][0]["pct"], -80.0)
 
+    def test_official_etf_list_parser(self):
+        raw = ("SYMBOL,NAME,ISIN\n"
+               "LIQUIDCASE,Zerodha Nifty 1D Rate Liquid ETF,INE0XYZ\n"
+               "GOLDBEES,Nippon India ETF Gold BeES,INE0ABC\n"
+               "NIFTYBEES,Nippon India ETF Nifty BeES,INE0DEF\n"
+               "BANKBEES,Nippon India ETF Bank BeES,INE0GHI\n"
+               "ITBEES,Nippon India ETF IT BeES,INE0JKL\n"
+               "JUNIORBEES,Nippon India ETF Junior BeES,INE0MNO\n"
+               "SILVERBEES,Nippon India ETF Silver BeES,INE0PQR\n"
+               "MON100,Motilal Oswal Nasdaq 100 ETF,INE0STU\n"
+               "LIQUIDSHRI,Shri Ram Liquid ETF,INE0VWX\n"
+               "CPSEETF,CPSE ETF,INE0YZA\n").encode()
+        symbols = pipe.parse_etf_symbols(raw)
+        self.assertIn("LIQUIDCASE", symbols)
+        self.assertIn("GOLDBEES", symbols)
+        self.assertEqual(len(symbols), 10)
+
+    def test_etf_cache_fallback_includes_reported_false_candidates(self):
+        self.assertIn("LIQUIDCASE", pipe.load_cached_etf_symbols())
+        self.assertIn("LIQUIDSHRI", pipe.load_cached_etf_symbols())
+        self.assertIn("GOLDBEES", pipe.load_cached_etf_symbols())
+        self.assertIn("NIFTYBEES", pipe.load_cached_etf_symbols())
+
+    def test_etf_rows_are_removed_before_screening(self):
+        symbols = pipe.load_cached_etf_symbols()
+        rows = [{"date": "2026-10-15", "symbol": s, "open": 100, "high": 101,
+                 "low": 99, "close": 100.5, "volume": 100000} for s in ("LIQUIDCASE", "LIQUIDSHRI", "ABC")]
+        filtered = [r for r in rows if r["symbol"] not in symbols]
+        self.assertEqual([r["symbol"] for r in filtered], ["ABC"])
+
     def test_output_placeholder_is_valid_json(self):
         payload = json.loads((ROOT / "data" / "latest_screen.json").read_text())
         self.assertEqual(payload["status"], "awaiting_first_run")

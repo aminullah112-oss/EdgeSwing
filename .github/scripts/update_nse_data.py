@@ -34,6 +34,8 @@ HISTORY_COLUMNS = ("date", "symbol", "open", "high", "low", "close", "volume")
 NSE_REPORTS = "https://www.nseindia.com/all-reports"
 NSE_ARCHIVE_TEMPLATE = "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{date}_F_0000.csv.zip"
 NSE_INDEX_API = "https://www.nseindia.com/api/historical/indicesHistory"
+NSE_ETF_LIST_URL = "https://nsearchives.nseindia.com/content/equities/eq_etfseclist.csv"
+ETF_LIST_PATH = DATA_DIR / "etf_symbols.csv"
 USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 MIN_AVG_TURNOVER = 10_000_000.0  # ₹1 crore, 20-session average
@@ -155,6 +157,77 @@ def read_bhavcopy_zip(content: bytes, source_date: dt.date) -> tuple[list[dict[s
         raise ValueError("No valid EQ-series OHLCV rows found")
     # The filename date can be the intended report date; record actual bar dates from source.
     return bars, warnings
+
+
+# Used only when the official NSE ETF security list is temporarily unavailable.
+# The downloaded NSE list replaces this cache on a successful parse.
+FALLBACK_ETF_SYMBOLS = {
+    "LIQUIDCASE", "LIQUIDSHRI", "LIQUIDBEES", "GOLDBEES", "SILVERBEES", "NIFTYBEES",
+    "BANKBEES", "JUNIORBEES", "ITBEES", "PSUBNKBEES", "PHARMABEES", "AUTOBEES",
+    "INFRABEES", "CONSUMBEES", "HNGSNGBEES", "MON100", "MONIFTY500", "MOM100",
+    "NIFTYIETF", "SETFNIF50", "SETFNIFBK", "SETFNN50", "NIFTYETF", "NIFTY1",
+    "NEXT50", "NEXT50IETF", "MID150BEES", "MIDCAPETF", "CPSEETF", "PSUBANK",
+    "HDFCNIFTY", "HDFCNIFBAN", "UTINIFTETF", "UTIBANKETF", "NIFTYBETA", "BANKBETA",
+    "ITETF", "IT", "BSLNIFTY", "NIFTYADD", "GOLDSHARE", "GOLD1", "GOLDCASE",
+    "SILVER1", "SILVERIETF", "SILVERETF", "SILVERCASE", "SILVERADD", "GOLDIETF",
+    "GOLDCASE", "GOLD360", "GOLDM", "GOLDNEXT50", "GOLD25IETF", "NV20IETF",
+    "LOWVOLIETF", "ALPHA", "ALPHAETF", "DIVOPPBEES", "ESG", "ESG10", "MAKEINDIA",
+}
+ETF_SYMBOL_HEADERS = {"symbol", "tckrsymb", "tradingsymbol", "securitysymbol", "symbolname"}
+
+
+def parse_etf_symbols(content: bytes) -> set[str]:
+    """Parse NSE's published ETF security CSV, tolerating header variations."""
+    text = content.decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise ValueError("NSE ETF list has no header")
+    header_map = {clean_header(h): h for h in reader.fieldnames if h}
+    symbol_key = next((header_map[h] for h in ETF_SYMBOL_HEADERS if h in header_map), None)
+    if not symbol_key:
+        raise ValueError("NSE ETF list has no recognized symbol column")
+    symbols = set()
+    for row in reader:
+        symbol = str(row.get(symbol_key) or "").strip().upper()
+        if symbol and re.fullmatch(r"[A-Z0-9&._-]+", symbol) and symbol not in {"SYMBOL", "NAN", "NONE"}:
+            symbols.add(symbol)
+    if len(symbols) < 10:
+        raise ValueError(f"NSE ETF list parsed only {len(symbols)} symbols; refusing to replace cache")
+    return symbols
+
+
+def load_cached_etf_symbols() -> set[str]:
+    if ETF_LIST_PATH.exists():
+        try:
+            text = ETF_LIST_PATH.read_text(encoding="utf-8-sig")
+            reader = csv.DictReader(io.StringIO(text))
+            if reader.fieldnames:
+                header_map = {clean_header(h): h for h in reader.fieldnames if h}
+                key = next((header_map[h] for h in ETF_SYMBOL_HEADERS if h in header_map), None)
+                if key:
+                    symbols = {str(row.get(key) or "").strip().upper() for row in reader}
+                    symbols = {x for x in symbols if re.fullmatch(r"[A-Z0-9&._-]+", x)}
+                    if len(symbols) >= 10:
+                        return symbols
+        except OSError:
+            pass
+    return set(FALLBACK_ETF_SYMBOLS)
+
+
+def refresh_etf_symbols() -> tuple[set[str], str, str | None]:
+    """Refresh ETF exclusions from NSE; use a cached/curated fallback on source failure."""
+    try:
+        content = request_bytes(NSE_ETF_LIST_URL, referer="https://www.nseindia.com/static/market-data/securities-available-for-trading")
+        symbols = parse_etf_symbols(content)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with ETF_LIST_PATH.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle, lineterminator="\n")
+            writer.writerow(["symbol"])
+            writer.writerows([[symbol] for symbol in sorted(symbols)])
+        return symbols, "NSE official ETF security list", None
+    except Exception as exc:
+        symbols = load_cached_etf_symbols()
+        return symbols, "cached/curated fallback ETF list", f"Could not refresh the official NSE ETF list ({exc}); used {len(symbols)} cached/curated ETF exclusions. Verify this list if NSE's source remains unavailable."
 
 
 def read_nifty_daily_csv(content: bytes, source_date: dt.date) -> list[dict[str, Any]]:
@@ -650,6 +723,15 @@ def main() -> int:
     force_backfill = str(os.environ.get("FORCE_BACKFILL", "false")).lower() in {"1", "true", "yes", "on"}
     existing = load_history()
     history, equity_run, warnings = acquire_equities(existing, force_backfill)
+    etf_symbols, etf_source, etf_warning = refresh_etf_symbols()
+    if etf_warning:
+        warnings.append(etf_warning)
+    before_etf_filter = len({r["symbol"] for r in history if not r["symbol"].startswith("NIFTY")})
+    history = [r for r in history if r["symbol"] not in etf_symbols]
+    after_etf_filter = len({r["symbol"] for r in history if not r["symbol"].startswith("NIFTY")})
+    etf_removed_count = before_etf_filter - after_etf_filter
+    if etf_removed_count:
+        warnings.append(f"Excluded {etf_removed_count} ETF symbol(s) using {etf_source} before screening.")
     equity_dates = sorted({r["date"] for r in history if not r["symbol"].startswith("NIFTY")})
     today = nse_today()
     # The normal benchmark source is NSE's dated daily index snapshot, fetched alongside bhavcopy.
@@ -688,8 +770,9 @@ def main() -> int:
     payload = {
         "schema_version": 1,
         "status": status,
-        "source": "NSE CM-UDiFF Common Bhavcopy (EQ series) + NSE daily NIFTY 50 snapshot (historical API fallback)",
-        "source_urls": {"equity_bhavcopy": "https://www.nseindia.com/all-reports", "index_daily_snapshots": "https://www.nseindia.com/all-reports", "index_history_fallback": "https://www.nseindia.com/reports-indices-historical-index-data"},
+        "source": "NSE CM-UDiFF Common Bhavcopy (EQ series), official NSE ETF security list, and NSE daily NIFTY 50 snapshot (historical API fallback)",
+        "source_urls": {"equity_bhavcopy": "https://www.nseindia.com/all-reports", "etf_security_list": NSE_ETF_LIST_URL, "index_daily_snapshots": "https://www.nseindia.com/all-reports", "index_history_fallback": "https://www.nseindia.com/reports-indices-historical-index-data"},
+        "etf_exclusion_source": etf_source, "etf_symbols_excluded_from_history": etf_removed_count,
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "as_of_ist": dt.datetime.now(dt.timezone(dt.timedelta(hours=5, minutes=30))).isoformat(timespec="seconds"),
         "latest_market_date": meta["latest_market_date"], "history_start": meta["history_start"],
@@ -714,6 +797,7 @@ def main() -> int:
            "completed_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
            "status": status, "equity_ingestion": equity_run,
            "benchmark_rows_received": len(benchmark_rows), "benchmark_error": benchmark_error,
+           "etf_exclusion_source": etf_source, "etf_symbols_excluded_from_history": etf_removed_count,
            "history_rows_after_dedup": len(history), "screened_candidates": len(candidates),
            "warnings": warnings[:80]}
     write_json(RUN_PATH, run)

@@ -9,11 +9,12 @@ A static GitHub Pages front end plus a scheduled Python ingestion and screening 
 1. **Historical bootstrap:** on the first run (or when stored history has fewer than 205 equity sessions), the workflow tries to backfill up to 260 recent NSE sessions.
 2. **Scheduled update:** the workflow runs Monday–Friday at approximately **20:30 Asia/Kolkata**. GitHub Actions can be delayed, and an NSE archive may not yet be published when the job starts.
 3. **Official cash-equity source:** downloads NSE CM-UDiFF Common Bhavcopy ZIP files and retains EQ-series rows only. Common non-EQ series are excluded.
-4. **Benchmark:** separately attempts to obtain NIFTY 50 historical index OHLC through NSE's historical index endpoint. If unavailable, relative-strength signals are disabled; breakout and pullback can still be evaluated.
-5. **Validation:** verifies the expected schema, parseable dates/numbers, positive OHLC prices, valid high/low envelopes and nonnegative volume. Invalid source files are rejected rather than partially accepted.
-6. **History store:** deduplicates by `(date, symbol)` and retains a rolling 320-session CSV. `data/history.csv` is the normalized source history; `data/last_run.json` records ingestion statistics and warnings.
-7. **Screening:** computes SMA20/50/200, EMA20, Wilder RSI(14), simple-average ATR(14), 20-session volume/turnover averages and 60-session return. It applies the rules below and publishes `data/latest_screen.json`.
-8. **Website:** the Overview and Stock scanner fetch the published JSON from the same GitHub Pages origin. The Data & research panel shows the history length, benchmark date and warnings. Manual CSV uploads are still available.
+4. **ETF exclusion:** refreshes the official NSE "Securities available for trading in ETF" CSV and removes those symbols from stored history before screening. A committed cache/curated fallback is used if NSE's ETF-list endpoint is temporarily unavailable; the run warning identifies fallback use. This prevents liquid, gold and index ETFs from being mistaken for individual company stocks.
+5. **Benchmark:** separately attempts to obtain NIFTY 50 historical index OHLC through NSE's historical index endpoint. If unavailable, relative-strength signals are disabled; breakout and pullback can still be evaluated.
+6. **Validation:** verifies the expected schema, parseable dates/numbers, positive OHLC prices, valid high/low envelopes and nonnegative volume. Invalid source files are rejected rather than partially accepted.
+7. **History store:** deduplicates by `(date, symbol)` and retains a rolling 320-session CSV. `data/history.csv` is the normalized source history; `data/last_run.json` records ingestion statistics and warnings.
+8. **Screening:** computes SMA20/50/200, EMA20, Wilder RSI(14), simple-average ATR(14), 20-session volume/turnover averages and 60-session return. It applies the rules below and publishes `data/latest_screen.json`.
+9. **Website:** the Overview and Stock scanner fetch the published JSON from the same GitHub Pages origin. The Data & research panel shows the history length, benchmark date and warnings. Manual CSV uploads are still available.
 
 ## Setup and deployment
 
@@ -21,7 +22,7 @@ A static GitHub Pages front end plus a scheduled Python ingestion and screening 
 2. In **Settings → Pages**, set **Source** to **GitHub Actions**. This matters: commits made by `GITHUB_TOKEN` do not themselves trigger a branch-based Pages rebuild, so this workflow publishes a Pages artifact directly after refreshing the JSON.
 3. The workflow already requests `contents: write`, `pages: write` and `id-token: write`. Ensure repository Actions permissions and Pages deployment policy allow these permissions.
 4. Open **Actions → Refresh EDGE NSE research screen → Run workflow** to start the initial backfill immediately. The first run automatically bootstraps history when it detects fewer than 205 equity sessions. Use `force_backfill` only to rebuild the lookback or recover missing recent history.
-5. Watch the Actions run and the **github-pages** environment deployment. The workflow commits `data/history.csv`, `data/latest_screen.json` and `data/last_run.json`, then deploys a minimal static artifact containing the website and latest shortlist. Future weekday runs update it automatically.
+5. Watch the Actions run and the **github-pages** environment deployment. The workflow commits `data/history.csv`, `data/latest_screen.json`, `data/last_run.json` and the refreshed `data/etf_symbols.csv` cache, then deploys a minimal static artifact containing the website and latest shortlist. Future weekday runs update it automatically.
 
 If the first run reports `source_unavailable`, inspect the workflow log and `data/last_run.json`, then rerun later. NSE can return transient access errors or delay report availability. The first backfill can take several minutes because it checks daily archives. Scheduled workflows run from the repository's default branch, and GitHub may delay scheduled starts. Keep the repository active and periodically check that Actions remains enabled. Benchmark history is refreshed when it is missing, shorter than 61 sessions, or behind the latest equity session.
 
@@ -58,7 +59,8 @@ Accepted dates include `YYYY-MM-DD`, `DD-MMM-YYYY` and unambiguous numeric day/m
 - `index.html`, `app.js`, `styles.css`: static website
 - `.github/workflows/refresh-edge-nse.yml`: scheduled and manual trigger
 - `.github/scripts/update_nse_data.py`: source ingestion, validation, indicators, screen and JSON generation
-- `data/history.csv`: normalized rolling OHLCV history (populated by Actions)
+- `data/history.csv`: normalized rolling OHLCV history with listed ETFs excluded (populated by Actions)
+- `data/etf_symbols.csv`: last successfully downloaded official NSE ETF symbol list, or the curated fallback list until refreshed
 - `data/latest_screen.json`: published website data and qualified candidate list
 - `data/last_run.json`: ingestion log and warnings
 - `tests/test_nse_pipeline.py`: offline parser/indicator tests, run with `python -m unittest discover -s tests -v`

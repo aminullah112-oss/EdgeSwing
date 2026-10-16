@@ -306,6 +306,7 @@
       `${Number(payload.eligible_symbols||0).toLocaleString("en-IN")} current symbols evaluated; ${Number(payload.symbols_with_200_sessions||0).toLocaleString("en-IN")} have at least 200 sessions.`,
       `${Number(payload.symbols_over_turnover_floor||0).toLocaleString("en-IN")} pass the ₹1 crore 20-session average-turnover floor.`,
       `NIFTY 50 benchmark latest session: ${payload.benchmark_latest_date||"missing"}.`,
+      `${Number(payload.etf_symbols_excluded_from_history||0).toLocaleString("en-IN")} ETF symbol(s) excluded from history; list source: ${payload.etf_exclusion_source||"not reported"}.`,
       `${Number(payload.qualified_count||0).toLocaleString("en-IN")} qualified setup(s) in the published output.`
     ];
     const all=[...counts,...warnings];
