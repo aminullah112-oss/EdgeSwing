@@ -326,7 +326,7 @@
       // Read and validate each file independently, then merge all bars into one chronological dataset.
       // Any failed file rejects the entire batch so the active dataset remains internally consistent.
       for(const file of files){
-        try{merged.push(...parseCSV(await file.text(),file.name));}
+        try{const parsed=parseCSV(await file.text(),file.name);for(const row of parsed)merged.push(row);}
         catch(err){
           const details=Array.isArray(err.details)&&err.details.length?err.details.map(d=>String(d)): [`${file.name}: ${err.message||"CSV import failed."}`];
           parseErrors.push(...details);
