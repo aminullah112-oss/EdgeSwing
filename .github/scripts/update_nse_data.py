@@ -712,9 +712,44 @@ def screen(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, 
     return candidates, meta, warnings
 
 
-def write_json(path: Path, content: dict[str, Any]) -> None:
+
+def recent_eod_snapshot(rows: list[dict[str, Any]], sessions: int = 12) -> tuple[list[str], list[list[Any]]]:
+    """Return compact recent EOD bars for browser-side paper-trade reconciliation.
+
+    Row schema: [date, symbol, open, high, low, close, ema20, close_change_pct].
+    Including 12 sessions lets the browser reconcile a 10-session proposal horizon
+    even when the user does not open the static page every trading day.
+    """
+    by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if row.get("symbol") and not str(row["symbol"]).startswith("NIFTY"):
+            by_symbol[str(row["symbol"])].append(row)
+    dates = sorted({str(row["date"]) for row in rows if not str(row.get("symbol", "")).startswith("NIFTY")})[-sessions:]
+    if not dates:
+        return [], []
+    date_set = set(dates)
+    snapshot: list[list[Any]] = []
+    for symbol, raw in by_symbol.items():
+        inds = indicator_series(raw)
+        for item in inds:
+            if item["date"] not in date_set:
+                continue
+            prev = item.get("prev_close")
+            move_pct = ((float(item["close"]) / float(prev) - 1) * 100) if isinstance(prev, (int, float)) and prev > 0 else None
+            def rounded(value: Any, digits: int = 4) -> float | None:
+                return round(float(value), digits) if isinstance(value, (int, float)) and math.isfinite(float(value)) else None
+            snapshot.append([item["date"], symbol, rounded(item["open"]), rounded(item["high"]),
+                             rounded(item["low"]), rounded(item["close"]), rounded(item.get("ema20")),
+                             rounded(move_pct, 2)])
+    snapshot.sort(key=lambda x: (x[0], x[1]))
+    return dates, snapshot
+
+def write_json(path: Path, content: dict[str, Any], compact: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(content, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
+    # The published screen carries ~28k recent bars; compact output halves the browser download.
+    text = (json.dumps(content, separators=(",", ":"), ensure_ascii=False, allow_nan=False) if compact
+            else json.dumps(content, indent=2, ensure_ascii=False, allow_nan=False))
+    path.write_text(text + "\n", encoding="utf-8")
 
 
 def main() -> int:
@@ -767,8 +802,9 @@ def main() -> int:
         meta["strategy_counts"] = {"breakout": 0, "pullback": 0, "relative_strength": 0}
     if equity_date and (stale_days < 0 or stale_days > 3):
         warnings.append(f"Latest stored equity session is {stale_days} calendar days from today ({equity_date}); only data 0–3 calendar days old can pass the freshness gate. Check NSE archive availability and rerun the workflow.")
+    recent_market_dates, recent_market_bars = recent_eod_snapshot(history, sessions=12)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": status,
         "source": "NSE CM-UDiFF Common Bhavcopy (EQ series), official NSE ETF security list, and NSE daily NIFTY 50 snapshot (historical API fallback)",
         "source_urls": {"equity_bhavcopy": "https://www.nseindia.com/all-reports", "etf_security_list": NSE_ETF_LIST_URL, "index_daily_snapshots": "https://www.nseindia.com/all-reports", "index_history_fallback": "https://www.nseindia.com/reports-indices-historical-index-data"},
@@ -791,8 +827,12 @@ def main() -> int:
                     "stop_estimate": "close - 2 × simple-average ATR(14)"},
         "warnings": warnings,
         "candidates": candidates,
+        "recent_market_dates": recent_market_dates,
+        # Compact bars: [date, symbol, open, high, low, close, ema20, close_change_pct].
+        # This is a static snapshot for local paper-plan reconciliation only.
+        "recent_eod_bars": recent_market_bars,
     }
-    write_json(SCREEN_PATH, payload)
+    write_json(SCREEN_PATH, payload, compact=True)
     run = {"started_at_utc": started.isoformat(timespec="seconds"),
            "completed_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
            "status": status, "equity_ingestion": equity_run,

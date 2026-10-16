@@ -1,6 +1,16 @@
 name: Refresh EDGE NSE research screen
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'app.js'
+      - 'styles.css'
+      - 'README.md'
+      - '.github/scripts/update_nse_data.py'
+      - '.github/workflows/refresh-edge-nse.yml'
+      - 'tests/**'
   schedule:
     # After the NSE cash-market close and typical end-of-day report publication.
     - cron: "30 20 * * 1-5"

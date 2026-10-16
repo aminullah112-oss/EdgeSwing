@@ -6,9 +6,10 @@
   const fmtNum = (n,d=2) => Number.isFinite(n) ? n.toLocaleString("en-IN",{maximumFractionDigits:d,minimumFractionDigits:d}) : "—";
   const escapeHtml = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const todayISO = () => new Date().toISOString().slice(0,10);
-  const state = { bars: [], candidates: [], source:"Synthetic demo data", demo:true, autoMode:false, autoMeta:null, lastDate:"—", strategy:"all", ledger:[], gates:{}, currentPlan:null };
+  const state = { bars: [], candidates: [], source:"Synthetic demo data", demo:true, autoMode:false, autoMeta:null, lastDate:"—", strategy:"all", ledger:[], gates:{}, currentPlan:null, settings:{capital:1000000,riskPct:0.25,costPct:0.15,maxHold:10} };
   const STORAGE_LEDGER = "edgeNsePaperLedgerV1";
   const STORAGE_GATES = "edgeNseResearchGatesV1";
+  const STORAGE_SETTINGS = "edgeNsePlanSettingsV1";
   let toastTimer;
   function toast(message) {
     const el=$("#toast"); el.textContent=message; el.classList.add("show");
@@ -17,11 +18,35 @@
   function loadLocal() {
     try { state.ledger=JSON.parse(localStorage.getItem(STORAGE_LEDGER)||"[]"); } catch { state.ledger=[]; }
     try { state.gates=JSON.parse(localStorage.getItem(STORAGE_GATES)||"{}"); } catch { state.gates={}; }
+    try { state.settings={...state.settings,...JSON.parse(localStorage.getItem(STORAGE_SETTINGS)||"{}")}; } catch { /* keep defaults */ }
     $$("[data-gate]").forEach(el=>el.checked=!!state.gates[el.dataset.gate]);
-    updateGateUI();
+    syncSettingsUI(); updateGateUI();
   }
   function safeStore(key,value){try{localStorage.setItem(key,JSON.stringify(value));return true;}catch(err){toast("Browser storage is unavailable or full. Export your data and check browser privacy settings.");return false;}}
-  function saveLedger(){ safeStore(STORAGE_LEDGER,state.ledger); renderLedger(); }
+  function saveLedger(){ safeStore(STORAGE_LEDGER,state.ledger); renderLedger(); renderOverviewTracker(); }
+  function syncSettingsUI(){
+    $$('[data-setting="capital"]').forEach(el=>el.value=state.settings.capital);
+    $$('[data-setting="riskPct"]').forEach(el=>el.value=state.settings.riskPct);
+    $$('[data-setting="costPct"]').forEach(el=>el.value=state.settings.costPct);
+    $$('[data-setting="maxHold"]').forEach(el=>el.value=String(state.settings.maxHold));
+    const c=$("#capitalInput"),r=$("#riskInput"),cost=$("#costInput");
+    if(c)c.value=state.settings.capital;if(r)r.value=state.settings.riskPct;if(cost)cost.value=state.settings.costPct;
+    const profile=$("#profileSummary");if(profile)profile.textContent=`${fmtINR(state.settings.capital)} · ${fmtNum(state.settings.riskPct,2)}% risk`;
+    const badge=$("#scannerCapitalBadge");if(badge)badge.textContent=fmtINR(state.settings.capital);
+    const budget=$("#scannerRiskBudget");if(budget)budget.textContent=`${fmtINR(state.settings.capital*state.settings.riskPct/100)} per-proposal risk budget`;
+    const hold=$("#scanHoldPeriod");if(hold)hold.textContent=`Up to ${state.settings.maxHold} sessions`;
+  }
+  function updateSettingsFromElement(el){
+    const key=el.dataset.setting;if(!key)return;
+    let value=Number(el.value);
+    if(key==="capital")value=Math.max(0,value);
+    if(key==="riskPct")value=Math.min(2,Math.max(0.01,value));
+    if(key==="costPct")value=Math.min(5,Math.max(0,value));
+    if(key==="maxHold")value=[2,5,7,10].includes(value)?value:10;
+    if(!Number.isFinite(value))return;
+    state.settings[key]=value;safeStore(STORAGE_SETTINGS,state.settings);syncSettingsUI();
+    if($("#entryInput"))calcRisk();renderScanner();renderOverviewTracker();
+  }
   function normalizeDate(value){
     const v=String(value||"").trim();
     let m=v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$/);
@@ -161,20 +186,44 @@
     }
     return all.sort((a,b)=>b.score-a.score||b.date.localeCompare(a.date));
   }
-  function setupLabel(s){return s==="breakout"?"Breakout":s==="pullback"?"Pullback":"Relative strength";}
+  function setupLabel(s){return s==="breakout"?"Breakout":s==="pullback"?"Pullback":s==="relative_strength"?"Relative strength":"Manual plan";}
   function setupClass(s){return "setup-"+s;}
   function money(n){return fmtINR(n,2);}
+  function qualityTier(score){const n=Number(score)||0;return n>=70?"High":n>=50?"Medium":"Low";}
+  function tierClass(score){return "tier-"+qualityTier(score).toLowerCase();}
+  function activeRiskInLedger(){return state.ledger.filter(x=>(x.status==="Planned"||x.status==="Open")&&!x.reviewRequired).reduce((sum,x)=>sum+Math.max(0,Number(x.qty)||0)*Math.max(0,(Number(x.entry)||Number(x.entryTrigger)||0)-(Number(x.stop)||0)),0);}
+  function buildTradePlan(r){
+    const s=state.settings,capital=Number(s.capital)||0,riskPct=Number(s.riskPct)||0,costPct=Number(s.costPct)||0;
+    const close=Number(r.close)||0,atr=Number(r.atr??r.atr14_sma)||((close-Number(r.stop||0))/2);
+    const entryTrigger=close*1.0025;
+    const stop=Number(r.stop)>0&&Number(r.stop)<entryTrigger?Number(r.stop):(atr>0?close-2*atr:close*.96);
+    const riskPerShare=entryTrigger-stop,perTradeBudget=capital*riskPct/100;
+    const remainingPortfolioRisk=Math.max(0,capital*.015-activeRiskInLedger());
+    const riskBudget=Math.min(perTradeBudget,remainingPortfolioRisk);
+    const qty=riskPerShare>0?Math.max(0,Math.min(Math.floor(riskBudget/riskPerShare),Math.floor(capital*.15/entryTrigger))):0;
+    const positionValue=qty*entryTrigger,estimatedCost=positionValue*costPct/100;
+    const target1=entryTrigger+riskPerShare,target2=entryTrigger+2*riskPerShare;
+    return {symbol:r.symbol,strategy:r.strategy||"breakout",score:Number(r.score)||0,tier:qualityTier(r.score),signalDate:r.date||state.lastDate,signalClose:close,entry:entryTrigger,entryTrigger,stop,target1,target2,target:target2,qty,capitalAtProposal:capital,riskPctAtProposal:riskPct,costPctAtProposal:costPct,riskBudget,riskPerShare,positionValue,estimatedCost,plannedRisk:qty*riskPerShare,rewardRisk:2,relVol:Number(r.relVol??r.rel_vol)||0,rsi:Number(r.rsi)||0,atr,validForSessions:3,maxHoldSessions:Number(s.maxHold)||10,quantityAvailable:qty>0,remainingPortfolioRisk};
+  }
+  function proposalReason(r){
+    const parts=[];
+    if(r.strategy==="breakout")parts.push("20-session breakout and volume confirmation");
+    else if(r.strategy==="pullback")parts.push("trend pullback reclaiming EMA20");
+    else parts.push("relative strength versus NIFTY 50");
+    if(Number(r.relVol)>=1.5)parts.push("elevated relative volume");
+    if(Number(r.rsi)>=70)parts.push("RSI is overbought; size and entry need extra scrutiny");
+    return parts.join(" · ");
+  }
   function renderCandidateRows(rows,target,withRank=false){
-    const tbody=$(target);
+    const tbody=$(target);if(!tbody)return;
     if(!rows.length){tbody.innerHTML="";return;}
     tbody.innerHTML=rows.map((r,i)=>`<tr>
       ${withRank?`<td>${String(i+1).padStart(2,"0")}</td>`:""}
-      <td><div class="symbol-cell"><span class="symbol-avatar">${escapeHtml(r.symbol.slice(0,2))}</span><span>${escapeHtml(r.symbol)}<span class="symbol-sub">${escapeHtml(r.date)}</span></span></div></td>
+      <td><div class="symbol-cell"><span class="symbol-avatar">${escapeHtml(String(r.symbol||"??").slice(0,2))}</span><span>${escapeHtml(r.symbol)}<span class="symbol-sub">${escapeHtml(r.date||"")}</span></span></div></td>
       <td><span class="setup-pill ${setupClass(r.strategy)}">${setupLabel(r.strategy)}</span></td>
-      <td>${money(r.close)}</td><td>${fmtNum(r.rsi,1)}</td><td>${fmtNum(r.relVol,2)}×</td>
-      ${withRank?`<td>${money(r.stop)}</td>`:""}
-      <td><div class="score-cell"><span class="score-number">${r.score}</span><span class="score-bar"><span style="width:${Math.max(0,Math.min(100,r.score))}%"></span></span></div></td>
-      ${withRank?`<td><button class="action-link" data-add-symbol="${escapeHtml(r.symbol)}" data-add-strategy="${r.strategy}" data-add-entry="${r.close}" data-add-stop="${r.stop}" data-add-date="${r.date}">＋ Log</button></td>`:`<td><span class="state-pill">Screened</span></td>`}
+      <td>${money(Number(r.close)||0)}</td><td>${fmtNum(Number(r.rsi),1)}</td><td>${fmtNum(Number(r.relVol??r.rel_vol),2)}×</td>
+      <td><div class="score-cell"><span class="score-number">${Number(r.score)||0}</span><span class="score-bar"><span style="width:${Math.max(0,Math.min(100,Number(r.score)||0))}%"></span></span><span class="tier-pill ${tierClass(r.score)}">${qualityTier(r.score)}</span></div></td>
+      ${withRank?`<td><button class="action-link" data-propose-symbol="${escapeHtml(r.symbol)}">＋ Proposal</button></td>`:`<td><span class="state-pill">Screened</span></td>`}
     </tr>`).join("");
   }
   function renderOverview(){
@@ -186,31 +235,157 @@
     $("#overviewEmpty").textContent=state.autoMode&&state.candidates.length===0
       ?"The automated pipeline has no qualified setups to show for the latest completed session, or the data-readiness gate is not satisfied. This can be a valid outcome. Review Data & research for freshness, history length, benchmark status and corporate-action warnings."
       :state.demo&&state.candidates.length===0
-        ?"No candidates qualify on the latest synthetic bar. This is expected: demo data is designed to test the interface, not manufacture trade signals. The scheduled pipeline will replace demo data after its first successful run."
+        ?"No candidates qualify on the latest synthetic bar. Demo data is for interface testing, not signal generation."
         :"No candidates qualify for this overview filter on the latest available bar. Open the scanner, adjust filters, or upload more validated history.";
     $("#setupsMetric").textContent=String(latest.length).padStart(2,"0");
     $("#positionsMetric").textContent=String(state.ledger.filter(x=>x.status==="Planned"||x.status==="Open").length).padStart(2,"0");
     $("#candidateCount").textContent=`Showing ${rows.length} of ${latest.length}`;
     $("#tableFootnote").textContent=state.autoMode?`Automated NSE EOD screen · ${state.autoMeta?.latest_market_date||state.lastDate} · technical rules only`:state.demo?"Synthetic demo data · not a recommendation":"Uploaded CSV · technical rules only";
-    drawEquityChart();
+    renderOverviewTracker();drawEquityChart();
+  }
+  function proposalCard(r){
+    const p=buildTradePlan(r),unavailable=!p.quantityAvailable;
+    const score=Math.max(0,Math.min(100,p.score));
+    return `<article class="proposal-card">
+      <div class="proposal-card-top"><div class="proposal-identity"><span class="symbol-avatar">${escapeHtml(p.symbol.slice(0,2))}</span><div><div class="proposal-symbol">${escapeHtml(p.symbol)}</div><div class="proposal-subtitle">${escapeHtml(p.signalDate)} · ${escapeHtml(setupLabel(p.strategy))}</div></div></div><div class="score-ring ${tierClass(score)}"><strong>${score}</strong><small>/100</small></div></div>
+      <div class="proposal-card-badges"><span class="setup-pill ${setupClass(p.strategy)}">${escapeHtml(setupLabel(p.strategy))}</span><span class="tier-pill ${tierClass(score)}">${escapeHtml(p.tier)} setup quality</span><span class="holding-pill">2–${p.maxHoldSessions} sessions</span></div>
+      <div class="proposal-reason">${escapeHtml(proposalReason({...r,relVol:p.relVol,rsi:p.rsi}))}</div>
+      <div class="proposal-price-grid"><div><span>ENTRY TRIGGER</span><strong>${money(p.entryTrigger)}</strong><small>Next-session stop-entry</small></div><div class="stop-rail"><span>STOP LOSS</span><strong>${money(p.stop)}</strong><small>${fmtNum((p.entryTrigger-p.stop)/p.entryTrigger*100,2)}% below entry</small></div><div class="target-rail"><span>TAKE PROFIT 1</span><strong>${money(p.target1)}</strong><small>1R reference</small></div><div class="target-rail target-rail-strong"><span>TAKE PROFIT 2</span><strong>${money(p.target2)}</strong><small>2R · proposal target</small></div></div>
+      <div class="proposal-metrics"><div><span>SUGGESTED QTY</span><strong>${p.qty.toLocaleString("en-IN")}</strong></div><div><span>POSITION VALUE</span><strong>${fmtINR(p.positionValue)}</strong></div><div><span>PLANNED RISK</span><strong>${fmtINR(p.plannedRisk)}</strong></div><div><span>EST. ROUND-TRIP COST</span><strong>${fmtINR(p.estimatedCost,2)}</strong></div></div>
+      <div class="proposal-card-bottom"><div class="proposal-validity"><span class="pulse-dot"></span><span>Entry valid for ${p.validForSessions} sessions · max hold ${p.maxHoldSessions}</span></div><button class="button button-primary proposal-button" data-propose-symbol="${escapeHtml(p.symbol)}" ${unavailable?"disabled":""}>${unavailable?"Risk capacity unavailable":"Create proposal & track"}</button></div>
+      ${unavailable?`<div class="proposal-warning">The aggregate open-risk cap or 15% notional cap leaves no room for this position. Do not increase the risk limit automatically.</div>`:""}
+    </article>`;
   }
   function renderScanner(){
     const strategy=$("#strategyFilter").value,min=Number($("#minScore").value),sort=$("#sortSignals").value;
-    const latestBySymbol=new Map();
-    for(const r of state.candidates){const old=latestBySymbol.get(r.symbol);if(!old||r.date>old.date)latestBySymbol.set(r.symbol,r);}
-    let rows=[...latestBySymbol.values()].filter(r=>(strategy==="all"||r.strategy===strategy)&&r.score>=min);
-    rows.sort((a,b)=>sort==="volume"?b.relVol-a.relVol:sort==="rsi"?b.rsi-a.rsi:sort==="symbol"?a.symbol.localeCompare(b.symbol):b.score-a.score);
-    $("#scanMatches").textContent=rows.length;
-    $("#scanAsOf").textContent=state.lastDate;
-    renderCandidateRows(rows,"#scannerTable",true);
+    const latestBySymbol=new Map();for(const r of state.candidates){const old=latestBySymbol.get(r.symbol);if(!old||r.date>old.date)latestBySymbol.set(r.symbol,r);}
+    let rows=[...latestBySymbol.values()].filter(r=>(strategy==="all"||r.strategy===strategy)&&(Number(r.score)||0)>=min);
+    rows.sort((a,b)=>sort==="volume"?(Number(b.relVol??b.rel_vol)||0)-(Number(a.relVol??a.rel_vol)||0):sort==="rsi"?(Number(b.rsi)||0)-(Number(a.rsi)||0):sort==="symbol"?a.symbol.localeCompare(b.symbol):(Number(b.score)||0)-(Number(a.score)||0));
+    $("#scanMatches").textContent=rows.length;$("#scanAsOf").textContent=state.lastDate;
+    const grid=$("#proposalGrid");if(grid)grid.innerHTML=rows.map(proposalCard).join("");
     $("#scannerEmpty").classList.toggle("hidden",rows.length>0);
     $("#scannerEmpty").textContent=state.autoMode&&state.candidates.length===0
-      ?"The automated screen currently has no qualified candidates. Check pipeline status, history length, benchmark availability and data warnings in Data & research. Zero signals can be a legitimate result."
+      ?"The automated screen has no qualified candidates or the data-readiness gate is not satisfied. Zero signals can be a legitimate result."
       :state.demo&&state.candidates.length===0
-        ?"The scanner is working. Synthetic demo data does not intentionally create a latest-bar trade setup. The scheduled pipeline will publish NSE EOD results after its first successful run."
+        ?"The scanner is working. Synthetic demo data does not intentionally manufacture latest-bar signals."
         :state.candidates.length===0
-          ?"No setup qualifies on the latest bar. Check the data end date, 200-session trend history and ₹1 crore minimum 20-day average turnover; this screener does not display stale historical signals."
-          :"No candidates meet these filters. Try a lower score threshold or choose another strategy.";
+          ?"No setup qualifies on the latest bar. Check data freshness, SMA200 history and the ₹1 crore 20-session average-turnover floor."
+          :"No candidates meet these filters. Try a lower setup-score threshold or a different strategy.";
+    syncSettingsUI();
+  }
+  function decodeRecentBars(payload){
+    if(!Array.isArray(payload?.recent_eod_bars))return [];
+    return payload.recent_eod_bars.map(row=>Array.isArray(row)?({date:row[0],symbol:row[1],open:Number(row[2]),high:Number(row[3]),low:Number(row[4]),close:Number(row[5]),ema20:row[6]==null?NaN:Number(row[6]),movePct:row[7]==null?NaN:Number(row[7])}):row).filter(r=>r.date&&r.symbol&&Number.isFinite(r.close)&&Number.isFinite(r.high)&&Number.isFinite(r.low));
+  }
+  function setTradeMonitorState(item,label,action=false){item.monitorStatus=label;item.exitActionRequired=!!action;}
+  function finalizePaperTrade(item,bar,exitPrice,outcome,reason){
+    const qty=Number(item.qty)||0,entry=Number(item.fillPrice||item.entry)||0,cost=Number(item.estimatedCost)||0;
+    item.status="Closed";item.outcome=outcome;item.exitPrice=Number(exitPrice);item.exitDate=bar?.date||item.lastPriceDate||state.lastDate;
+    item.exitReason=reason;item.realizedPnl=(item.exitPrice-entry)*qty-cost;item.lastPrice=Number(bar?.close)||item.exitPrice;item.lastPriceDate=item.exitDate;
+    item.closedAt=item.exitDate;item.manualClosed=false;setTradeMonitorState(item,`${outcome.replaceAll("_"," ")} · ${reason}`,true);
+  }
+  function reconcileLedgerWithEod(payload){
+    const bars=decodeRecentBars(payload);
+    if(!bars.length){state.eodMonitoringMessage="EOD history snapshot not published yet. The pipeline must complete one refresh after this release.";renderLedger();renderOverviewTracker();return;}
+    const dates=Array.isArray(payload.recent_market_dates)?payload.recent_market_dates.slice().sort():[...new Set(bars.map(b=>b.date))].sort();
+    const firstDate=dates[0],barMap=new Map();
+    bars.forEach(b=>{const key=`${b.date}|${b.symbol}`;barMap.set(key,b);});
+    let changed=false;
+    for(const item of state.ledger){
+      if(item.monitorEnabled===false||!["Planned","Open"].includes(item.status))continue;
+      if(item.reviewRequired){
+        const latest=bars.filter(b=>b.symbol===item.symbol).at(-1);if(latest){item.lastPrice=latest.close;item.lastPriceDate=latest.date;}continue;
+      }
+      const lastEval=item.lastEvaluatedDate||item.createdMarketDate||item.createdAt||"0000-00-00";
+      const calendarGapDays=lastEval<firstDate?(Date.parse(firstDate)-Date.parse(lastEval))/86400000:0;
+      if(lastEval<firstDate&&calendarGapDays>7){
+        item.reviewRequired=true;item.lastPriceDate=payload.latest_market_date||dates.at(-1);const latest=bars.filter(b=>b.symbol===item.symbol).at(-1);if(latest)item.lastPrice=latest.close;
+        setTradeMonitorState(item,"DATA GAP · recent EOD window no longer covers this proposal; manual review required",true);changed=true;continue;
+      }
+      const nextDates=dates.filter(d=>d>lastEval);
+      for(const date of nextDates){
+        const bar=barMap.get(`${date}|${item.symbol}`);
+        if(!bar){item.lastEvaluatedDate=date;if(item.status==="Planned"){item.sessionsSinceSignal=(Number(item.sessionsSinceSignal)||0)+1;if(item.sessionsSinceSignal>=Number(item.validForSessions||3)){item.status="Closed";item.outcome="EXPIRED";item.exitDate=date;item.exitReason="No valid bar/entry trigger within entry window";setTradeMonitorState(item,"EXPIRED · no entry trigger",false);}}else{setTradeMonitorState(item,"MISSING BAR · price could not be verified",true);}changed=true;continue;}
+        item.lastPrice=bar.close;item.lastPriceDate=date;
+        if(Number.isFinite(bar.movePct)&&Math.abs(bar.movePct)>=40){item.reviewRequired=true;item.corporateActionDate=date;item.corporateActionMove=bar.movePct;item.lastEvaluatedDate=date;setTradeMonitorState(item,`DATA REVIEW · ${fmtNum(bar.movePct,1)}% one-day move on ${date}; automated exit logic paused`,true);changed=true;break;}
+        if(item.status==="Planned"){
+          item.sessionsSinceSignal=(Number(item.sessionsSinceSignal)||0)+1;
+          if(bar.high>=Number(item.entryTrigger||item.entry)){
+            const trigger=Number(item.entryTrigger||item.entry),fill=bar.open>=trigger?bar.open:trigger;
+            const oldQty=Number(item.qty)||0,capital=Number(item.capitalAtProposal)||Number(state.settings.capital),riskBudget=Number(item.riskBudget)||capital*(Number(item.riskPctAtProposal)||state.settings.riskPct)/100;
+            const newQty=Math.min(oldQty,Math.floor(riskBudget/Math.max(.000001,fill-Number(item.stop))),Math.floor(capital*.15/fill));
+            if(newQty<1){item.status="Closed";item.outcome="EXPIRED";item.exitDate=date;item.exitReason="Opening gap invalidated the planned risk/notional limits; no paper fill recorded";setTradeMonitorState(item,"EXPIRED · gap invalidated sizing",false);item.lastEvaluatedDate=date;changed=true;continue;}
+            item.status="Open";item.fillPrice=fill;item.entry=fill;item.entryDate=date;item.qty=newQty;item.holdingSessions=0;item.emaBreakCount=0;
+            const r=fill-Number(item.stop);item.target1=fill+r;item.target2=fill+2*r;item.target=item.target2;
+            item.positionValue=fill*newQty;item.plannedRisk=r*newQty;item.estimatedCost=item.positionValue*(Number(item.costPctAtProposal)||0)/100;
+          }else if(item.sessionsSinceSignal>=Number(item.validForSessions||3)){
+            item.status="Closed";item.outcome="EXPIRED";item.exitDate=date;item.exitReason="Entry trigger was not reached within the proposal-validity window";setTradeMonitorState(item,"EXPIRED · entry not triggered",false);item.lastEvaluatedDate=date;changed=true;continue;
+          }else{
+            setTradeMonitorState(item,`WAITING ENTRY · session ${item.sessionsSinceSignal}/${item.validForSessions||3}`,false);item.lastEvaluatedDate=date;changed=true;continue;
+          }
+        }
+        if(item.status==="Open"){
+          item.holdingSessions=(Number(item.holdingSessions)||0)+1;
+          const stop=Number(item.stop),tp1=Number(item.target1),tp2=Number(item.target2);
+          const stopHit=bar.low<=stop,target2Hit=bar.high>=tp2;
+          if(stopHit){const exitPrice=bar.open<stop?bar.open:stop;finalizePaperTrade(item,bar,exitPrice,"FAIL",target2Hit?"Stop and target touched on same daily bar; stop assumed first":"Initial stop-loss reached");}
+          else if(target2Hit){finalizePaperTrade(item,bar,tp2,"PASS","Target 2 reached before stop-loss");}
+          else{
+            if(bar.high>=tp1&&!item.target1Reached){item.target1Reached=true;item.target1Date=date;}
+            if(Number.isFinite(bar.ema20)&&bar.close<bar.ema20)item.emaBreakCount=(Number(item.emaBreakCount)||0)+1;else item.emaBreakCount=0;
+            if(Number(item.emaBreakCount)>=2){finalizePaperTrade(item,bar,bar.close,"FAIL","Two consecutive EOD closes below EMA20");}
+            else if(Number(item.holdingSessions)>=Number(item.maxHoldSessions||10)){finalizePaperTrade(item,bar,bar.close,"TIME_EXIT","Maximum holding window reached before target 2");}
+            else if(item.target1Reached){setTradeMonitorState(item,"TARGET 1 HIT · review partial profit / protect gains; target 2 pending",true);}
+            else if(Number(item.emaBreakCount)===1){setTradeMonitorState(item,"WATCH · first EOD close below EMA20; confirmation required",true);}
+            else{setTradeMonitorState(item,`OPEN · day ${item.holdingSessions}/${item.maxHoldSessions||10}`,false);}
+          }
+        }
+        item.lastEvaluatedDate=date;changed=true;
+      }
+    }
+    state.eodMonitoringMessage=`EOD tracker reconciled through ${payload.latest_market_date||dates.at(-1)} using ${dates.length} recent sessions.`;
+    if(changed)safeStore(STORAGE_LEDGER,state.ledger);
+    renderLedger();renderOverviewTracker();
+  }
+  function ledgerPnl(item){
+    const qty=Number(item.qty)||0,entry=Number(item.fillPrice||item.entry)||0;
+    const price=item.status==="Closed"&&Number.isFinite(Number(item.exitPrice))?Number(item.exitPrice):Number(item.lastPrice);
+    if(!Number.isFinite(price)||!entry||!qty||item.status==="Planned")return 0;
+    return (price-entry)*qty-(Number(item.estimatedCost)||0);
+  }
+  function trackerStatusClass(item){
+    if(item.monitorEnabled===false)return "monitor-muted";
+    if(item.reviewRequired)return "monitor-review";
+    if(item.outcome==="PASS")return "monitor-pass";
+    if(item.outcome==="FAIL")return "monitor-fail";
+    if(["TIME_EXIT","EXPIRED","MANUAL_EXIT"].includes(item.outcome)||item.status==="Cancelled")return "monitor-muted";
+    if(item.status==="Open"&&item.exitActionRequired)return "monitor-action";
+    return item.status==="Open"?"monitor-open":"monitor-wait";
+  }
+  function trackerCard(item){
+    const pnl=ledgerPnl(item),price=Number(item.lastPrice),hasPrice=Number.isFinite(price)&&price>0;
+    const entry=Number(item.fillPrice||item.entryTrigger||item.entry)||0;
+    const pnlClass=pnl>0?"pnl-positive":pnl<0?"pnl-negative":"";
+    const label=item.reviewRequired?"MANUAL DATA REVIEW":item.outcome==="PASS"?(item.exitActionRequired?"PASS · EXIT SIGNAL":"PASSED"):item.outcome==="FAIL"?(item.exitActionRequired?"FAIL · EXIT SIGNAL":"FAILED"):item.outcome==="TIME_EXIT"?(item.exitActionRequired?"TIME EXIT · EXIT SIGNAL":"TIME EXIT"):item.outcome==="MANUAL_EXIT"?"MANUAL EXIT":item.status==="Cancelled"?"CANCELLED":item.outcome==="EXPIRED"?"EXPIRED":item.monitorEnabled===false?"MANUAL PLAN":item.status==="Open"?"OPEN · TRACKING":"WAITING FOR ENTRY";
+    const holding=item.entryDate?`${Number(item.holdingSessions)||0}/${Number(item.maxHoldSessions)||10} sessions held`:`Entry valid ${item.validForSessions||3} sessions`;
+    const action=item.reviewRequired?"Manual review needed; automated rule evaluation is paused.":item.monitorStatus||"Awaiting EOD update.";
+    return `<article class="tracker-card ${item.reviewRequired?"tracker-card-review":""}">
+      <div class="tracker-card-head"><div class="proposal-identity"><span class="symbol-avatar">${escapeHtml(String(item.symbol||"??").slice(0,2))}</span><div><div class="proposal-symbol">${escapeHtml(item.symbol||"MANUAL")}</div><div class="proposal-subtitle">${escapeHtml(item.createdMarketDate||item.createdAt||"")} · ${escapeHtml(setupLabel(item.strategy||"breakout"))}</div></div></div><span class="tracker-status ${trackerStatusClass(item)}">${label}</span></div>
+      <div class="tracker-price-grid"><div><span>${item.entryDate?"FILLED ENTRY":"ENTRY TRIGGER"}</span><strong>${money(entry)}</strong><small>${item.entryDate?escapeHtml(item.entryDate):"Not filled"}</small></div><div><span>STOP LOSS</span><strong>${money(Number(item.stop)||0)}</strong><small>Initial risk rail</small></div><div><span>TARGET 1</span><strong>${money(Number(item.target1)||0)}</strong><small>${item.target1Reached?"Reached · "+escapeHtml(item.target1Date||""):"1R"}</small></div><div><span>TARGET 2</span><strong>${money(Number(item.target2||item.target)||0)}</strong><small>2R proposal target</small></div></div>
+      <div class="tracker-bottom-grid"><div><span>LAST EOD CLOSE</span><strong>${hasPrice?money(price):"Waiting for data"}</strong><small>${escapeHtml(item.lastPriceDate||"—")}</small></div><div><span>PAPER EXIT PRICE</span><strong>${item.status==="Closed"&&Number.isFinite(Number(item.exitPrice))?money(Number(item.exitPrice)):"—"}</strong><small>${escapeHtml(item.exitDate||item.entryDate||"Pending")}</small></div><div><span>QUANTITY</span><strong>${(Number(item.qty)||0).toLocaleString("en-IN")}</strong><small>${fmtINR(Number(item.positionValue)||0)} planned value</small></div><div><span>MARK-TO-MARKET / REALIZED</span><strong class="${pnlClass}">${pnl>0?"+":""}${fmtINR(pnl,2)}</strong><small>${hasPrice&&entry?fmtNum((price/entry-1)*100,2)+"% move":"Not marked"}</small></div><div><span>TIME WINDOW</span><strong>${holding}</strong><small>Setup score ${Number(item.score)||"—"} · ${escapeHtml(item.qualityTier||qualityTier(item.score))}</small></div></div>
+      <div class="tracker-action ${trackerStatusClass(item)}"><span class="tracker-action-icon">${item.exitActionRequired||item.reviewRequired?"⚑":"↻"}</span><div><strong>${item.exitActionRequired?"ACTION / REVIEW":item.status==="Open"?"DAILY STATUS":"PROPOSAL STATUS"}</strong><p>${escapeHtml(action)}</p></div></div>
+      <div class="tracker-card-actions">${item.exitActionRequired?`<button class="button button-small button-secondary" data-ack-action="${escapeHtml(item.id)}">Acknowledge exit action</button>`:""}${item.status==="Open"&&hasPrice?`<button class="button button-small button-secondary" data-manual-close="${escapeHtml(item.id)}">Mark exited at latest close</button>`:""}${item.status==="Planned"?`<button class="button button-small button-secondary" data-cancel-proposal="${escapeHtml(item.id)}">Cancel proposal</button>`:""}<button class="action-link danger-link" data-delete-id="${escapeHtml(item.id)}">Delete</button></div>
+    </article>`;
+  }
+  function renderTrackerCards(target,items,limit=Infinity){const el=$(target);if(!el)return;const list=items.slice().reverse().slice(0,limit);el.innerHTML=list.map(trackerCard).join("");}
+  function renderOverviewTracker(){
+    const active=state.ledger.filter(x=>x.status==="Planned"||x.status==="Open");
+    const exits=state.ledger.filter(x=>x.exitActionRequired||x.reviewRequired);
+    const passed=state.ledger.filter(x=>x.outcome==="PASS").length,failed=state.ledger.filter(x=>x.outcome==="FAIL").length;
+    const set=(id,value)=>{const el=$(id);if(el)el.textContent=String(value);};
+    set("#monitorActive",active.length);set("#monitorExit",exits.length);set("#monitorPassed",passed);set("#monitorFailed",failed);
+    renderTrackerCards("#overviewTrackerList",state.ledger.filter(x=>x.status==="Planned"||x.status==="Open"||x.reviewRequired||x.exitActionRequired),3);
+    const empty=$("#overviewTrackerEmpty");if(empty)empty.classList.toggle("hidden",state.ledger.some(x=>x.status==="Planned"||x.status==="Open"||x.reviewRequired||x.exitActionRequired));
   }
   function drawEquityChart(){
     const canvas=$("#equityChart");if(!canvas)return;
@@ -269,7 +444,7 @@
     const candidates=Number(payload?.qualified_count)||0;
     if(status==="ready"){
       statusEl.textContent=`Ready · ${candidates} candidate(s)`;
-      detailsEl.textContent=`NSE EOD data through ${date}. Last pipeline build: ${payload.generated_at_utc||"time unavailable"}. Sources: official NSE CM-UDiFF cash-equity bhavcopy and NSE NIFTY 50 history where available. Weekday refresh is scheduled for 20:30 India time; GitHub Actions can be delayed. No live orders.`;
+      detailsEl.textContent=`NSE EOD data through ${date}. Last pipeline build: ${payload.generated_at_utc||"time unavailable"}. ${Array.isArray(payload.recent_eod_bars)?`${payload.recent_eod_bars.length.toLocaleString("en-IN")} recent EOD bars are available for paper proposal review.`:"EOD proposal-tracking bars will appear after the updated pipeline has run."} Sources: NSE cash-equity bhavcopy and NIFTY 50 history where available. Weekday refresh is scheduled for 20:30 India time; Actions can be delayed. No live orders.`;
       $("#demoWarning")?.classList.add("hidden");
     }else if(status==="warming_up"){
       statusEl.textContent="Building history";
@@ -307,7 +482,8 @@
       `${Number(payload.symbols_over_turnover_floor||0).toLocaleString("en-IN")} pass the ₹1 crore 20-session average-turnover floor.`,
       `NIFTY 50 benchmark latest session: ${payload.benchmark_latest_date||"missing"}.`,
       `${Number(payload.etf_symbols_excluded_from_history||0).toLocaleString("en-IN")} ETF symbol(s) excluded from history; list source: ${payload.etf_exclusion_source||"not reported"}.`,
-      `${Number(payload.qualified_count||0).toLocaleString("en-IN")} qualified setup(s) in the published output.`
+      `${Number(payload.qualified_count||0).toLocaleString("en-IN")} qualified setup(s) in the published output.`,
+      `${Number(payload.recent_eod_bars?.length||0).toLocaleString("en-IN")} recent EOD bars available for paper proposal reconciliation.`
     ];
     const all=[...counts,...warnings];
     $("#validationList").innerHTML=all.map((msg,i)=>`<div class="validation-item"><span class="validation-icon">${i<counts.length?"i":"!"}</span><span>${escapeHtml(msg)}</span><small>${i<counts.length?"Info":"Review"}</small></div>`).join("");
@@ -318,6 +494,7 @@
       if(!response.ok)throw new Error(`HTTP ${response.status}`);
       const payload=await response.json();
       renderAutomatedPipelineNotice(payload);
+      state.eodMonitoringMessage=Array.isArray(payload.recent_eod_bars)&&payload.recent_eod_bars.length?`Recent EOD history available through ${payload.latest_market_date||"latest session"}.`:`The updated EOD monitoring feed will be available after the next successful pipeline run.`;
       if(!["ready","warming_up","stale"].includes(payload.status))return;
       state.autoMode=true;state.autoMeta=payload;state.demo=false;state.source="Automated NSE EOD pipeline";state.bars=[];
       state.lastDate=payload.latest_market_date||"—";
@@ -329,6 +506,8 @@
       $("#scannerNavCount").textContent=String(state.candidates.length);
       $("#setupsMetric").textContent=String(state.candidates.length).padStart(2,"0");
       renderAutomatedHealth(payload);renderOverview();renderScanner();
+      if(payload.status==="ready")reconcileLedgerWithEod(payload);
+      else {state.eodMonitoringMessage=`EOD tracker waiting: pipeline status is ${payload.status}.`;renderLedger();renderOverviewTracker();}
     }catch(error){
       renderAutomatedPipelineNotice(null,String(error?.message||error));
     }
@@ -342,30 +521,53 @@
     return bars;
   }
   function renderLedger(){
-    const total=state.ledger.length,open=state.ledger.filter(x=>x.status==="Planned"||x.status==="Open").length,pnl=state.ledger.reduce((s,x)=>s+(Number(x.realizedPnl)||0),0);
-    $("#ledgerTotal").textContent=total;$("#ledgerOpen").textContent=open;$("#ledgerPnl").textContent=fmtINR(pnl);
-    $("#ledgerTable").innerHTML=state.ledger.slice().reverse().map(x=>`<tr><td>${escapeHtml(x.createdAt||"")}</td><td><div class="symbol-cell"><span class="symbol-avatar">${escapeHtml((x.symbol||"??").slice(0,2))}</span>${escapeHtml(x.symbol||"—")}</div></td><td><span class="setup-pill ${setupClass(x.strategy||"breakout")}">${setupLabel(x.strategy||"breakout")}</span></td><td>${money(Number(x.entry)||0)}</td><td>${money(Number(x.stop)||0)}</td><td>${Number(x.qty)||"—"}</td><td><select class="ledger-status" data-status-id="${escapeHtml(x.id)}"><option ${x.status==="Planned"?"selected":""}>Planned</option><option ${x.status==="Open"?"selected":""}>Open</option><option ${x.status==="Closed"?"selected":""}>Closed</option><option ${x.status==="Cancelled"?"selected":""}>Cancelled</option></select></td><td><input class="ledger-pnl" type="number" step="0.01" value="${Number(x.realizedPnl)||0}" data-pnl-id="${escapeHtml(x.id)}" aria-label="Realized P and L"></td><td><button class="action-link" data-delete-id="${escapeHtml(x.id)}">Delete</button></td></tr>`).join("");
-    $("#ledgerEmpty").classList.toggle("hidden",total>0);
-    $("#positionsMetric").textContent=String(open).padStart(2,"0");
+    const total=state.ledger.length,active=state.ledger.filter(x=>x.status==="Planned"||x.status==="Open").length;
+    const exits=state.ledger.filter(x=>x.exitActionRequired||x.reviewRequired).length;
+    const passed=state.ledger.filter(x=>x.outcome==="PASS").length,failed=state.ledger.filter(x=>x.outcome==="FAIL").length;
+    const set=(id,value)=>{const el=$(id);if(el)el.textContent=String(value);};
+    set("#ledgerOpen",active);set("#ledgerExitActions",exits);set("#ledgerPassed",passed);set("#ledgerFailed",failed);
+    renderTrackerCards("#ledgerCards",state.ledger);
+    const empty=$("#ledgerEmpty");if(empty)empty.classList.toggle("hidden",total>0);
+    const updated=$("#trackerUpdatedText");if(updated)updated.textContent=state.eodMonitoringMessage||`Showing ${total} local paper proposal(s).`;
+    const positions=$("#positionsMetric");if(positions)positions.textContent=String(active).padStart(2,"0");
   }
   function addLedger(item){
-    const entry=Number(item.entry)||0,stop=Number(item.stop)||0;
-    if(!item.symbol||entry<=0||stop<=0||stop>=entry){toast("Cannot log plan: check symbol, entry and stop.");return;}
-    const capital=Number($("#capitalInput").value)||0,riskPct=Number($("#riskInput").value)||0,riskBudget=Number(item.riskBudget)||capital*riskPct/100;const qty=Number.isFinite(Number(item.qty))&&Number(item.qty)>0?Number(item.qty):Math.max(0,Math.min(Math.floor(riskBudget/(entry-stop)),capital>0?Math.floor(capital*.15/entry):Math.floor(riskBudget/(entry-stop))));
-    if(!Number.isFinite(qty)||qty<1){toast("Cannot save this plan: position size is zero under the current risk budget and 15% notional cap. Adjust the planned entry/stop or review your settings; risk is not increased automatically.");return;}
-    state.ledger.push({id:String(Date.now())+Math.random().toString(16).slice(2,6),createdAt:todayISO(),symbol:item.symbol,strategy:item.strategy||"breakout",entry,stop,target:Number(item.target)||entry+2*(entry-stop),qty,status:"Planned",realizedPnl:0,notes:item.notes||"Paper only"});
-    saveLedger();toast("Added to local paper ledger — no order was placed.");navigate("ledger");
+    const entryTrigger=Number(item.entryTrigger??item.entry)||0,stop=Number(item.stop)||0;
+    if(!item.symbol||entryTrigger<=stop||stop<=0){toast("Cannot save plan: check symbol, entry trigger and stop-loss values.");return;}
+    const capital=Number(item.capitalAtProposal)||Number(state.settings.capital)||0;
+    const riskPct=Number(item.riskPctAtProposal)||Number(state.settings.riskPct)||0;
+    const riskBudget=Number(item.riskBudget)||capital*riskPct/100;
+    const qty=Number.isFinite(Number(item.qty))&&Number(item.qty)>0?Math.floor(Number(item.qty)):Math.max(0,Math.min(Math.floor(riskBudget/(entryTrigger-stop)),capital>0?Math.floor(capital*.15/entryTrigger):0));
+    if(qty<1){toast("Proposal blocked: no shares fit within the available risk budget and 15% position cap.");return;}
+    const marketDate=/^\d{4}-\d{2}-\d{2}$/.test(state.lastDate)?state.lastDate:todayISO();
+    const target1=Number(item.target1)||(entryTrigger+(entryTrigger-stop));
+    const target2=Number(item.target2??item.target)||(entryTrigger+2*(entryTrigger-stop));
+    const record={
+      id:String(Date.now())+Math.random().toString(16).slice(2,7),createdAt:todayISO(),createdMarketDate:marketDate,
+      symbol:item.symbol,strategy:item.strategy||"breakout",score:Number(item.score)||0,qualityTier:item.qualityTier||qualityTier(item.score),
+      signalClose:Number(item.signalClose)||entryTrigger,entry:entryTrigger,entryTrigger,fillPrice:null,entryDate:null,
+      stop,target1,target2,target:target2,qty,status:"Planned",outcome:"",realizedPnl:0,
+      capitalAtProposal:capital,riskPctAtProposal:riskPct,costPctAtProposal:Number(item.costPctAtProposal??state.settings.costPct)||0,
+      riskBudget,plannedRisk:qty*(entryTrigger-stop),positionValue:qty*entryTrigger,
+      estimatedCost:qty*entryTrigger*(Number(item.costPctAtProposal??state.settings.costPct)||0)/100,
+      validForSessions:Number(item.validForSessions)||3,maxHoldSessions:Number(item.maxHoldSessions)||Number(state.settings.maxHold)||10,
+      sessionsSinceSignal:0,holdingSessions:0,lastEvaluatedDate:marketDate,lastPrice:Number(item.signalClose)||entryTrigger,lastPriceDate:marketDate,
+      monitorEnabled:item.monitorEnabled!==false,monitorStatus:item.monitorEnabled===false?"MANUAL PLAN · no symbol EOD linkage":"WAITING ENTRY · entry trigger valid for 3 sessions",
+      exitActionRequired:false,reviewRequired:false,notes:item.notes||"Paper only; no order placed"
+    };
+    state.ledger.push(record);saveLedger();toast("Proposal saved to this browser’s paper tracker. No order was placed.");navigate("ledger");
   }
   function calcRisk(){
     const capital=Number($("#capitalInput").value),riskPct=Number($("#riskInput").value),entry=Number($("#entryInput").value),stop=Number($("#stopInput").value),target=Number($("#targetInput").value),costPct=Number($("#costInput").value);
     if(!(capital>0&&riskPct>0&&entry>stop&&stop>0&&costPct>=0)){toast("Enter valid capital, risk, entry and stop values.");return null;}
-    const budget=capital*riskPct/100,perShare=entry-stop,rawQty=Math.max(0,Math.floor(budget/perShare)),notionalCapQty=Math.floor((capital*.15)/entry),qty=Math.min(rawQty,notionalCapQty),value=qty*entry,cost=value*costPct/100*2,netLoss=qty*perShare+cost,rr=target>entry?(target-entry)/perShare:NaN;
-    $("#riskBudget").textContent=fmtINR(budget);$("#riskPercentLabel").textContent=`${fmtNum(riskPct,2)}% of equity`;
+    const perTradeBudget=capital*riskPct/100,portfolioRemaining=Math.max(0,capital*.015-activeRiskInLedger()),budget=Math.min(perTradeBudget,portfolioRemaining);
+    const perShare=entry-stop,rawQty=Math.max(0,Math.floor(budget/perShare)),notionalCapQty=Math.floor((capital*.15)/entry),qty=Math.min(rawQty,notionalCapQty),value=qty*entry,cost=value*costPct/100,netLoss=qty*perShare+cost,rr=target>entry?(target-entry)/perShare:NaN;
+    $("#riskBudget").textContent=fmtINR(budget);$("#riskPercentLabel").textContent=`${fmtNum(riskPct,2)}% of equity · aggregate cap applied`;
     $("#riskPerShare").textContent=money(perShare);$("#riskQty").textContent=qty.toLocaleString("en-IN")+" shares";$("#positionValue").textContent=fmtINR(value);
     $("#estimatedCosts").textContent=fmtINR(cost,2);$("#rrRatio").textContent=Number.isFinite(rr)?fmtNum(rr,2)+"×":"Not set";
     $("#netStopLoss").textContent="−"+fmtINR(netLoss,2);
-    $("#riskAlert").textContent=qty===0?"Risk budget cannot buy one share at this stop distance. Do not increase risk automatically.":rawQty>notionalCapQty?`Quantity reduced from ${rawQty.toLocaleString("en-IN")} to ${qty.toLocaleString("en-IN")} shares by the 15% per-position notional cap.`:"Estimate only. Also check aggregate open risk, correlated positions, liquidity, gaps and broker-specific charges.";
-    state.currentPlan={symbol:"MANUAL",strategy:"breakout",entry,stop,target,qty,riskBudget:budget};
+    $("#riskAlert").textContent=qty===0?"Risk capacity is unavailable for one share under the remaining aggregate risk and notional limits. Do not increase risk automatically.":rawQty>notionalCapQty?`Quantity reduced from ${rawQty.toLocaleString("en-IN")} to ${qty.toLocaleString("en-IN")} shares by the 15% per-position notional cap.`:budget<perTradeBudget?`Risk budget reduced to ${fmtINR(budget)} because planned/open risk has used part of the 1.5% aggregate cap.`:"Estimate only. Also check correlated positions, liquidity, gaps and broker-specific charges.";
+    state.currentPlan={symbol:"MANUAL",strategy:"breakout",entry,stop,target,target1:entry+perShare,target2:target,qty,riskBudget:budget,capitalAtProposal:capital,riskPctAtProposal:riskPct,costPctAtProposal:costPct,monitorEnabled:false};
     return state.currentPlan;
   }
   function updateGateUI(){
@@ -386,7 +588,7 @@
   }
   function csvFor(rows){if(!rows.length)return "";const cols=Object.keys(rows[0]);const cell=v=>{const s=String(v??"");return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};return [cols.join(","),...rows.map(r=>cols.map(c=>cell(r[c])).join(","))].join("\n");}
   function init(){
-    loadLocal();setBars(syntheticData(),"Synthetic demo data",true);calcRisk();loadAutomatedScreen();
+    loadLocal();renderLedger();setBars(syntheticData(),"Synthetic demo data",true);calcRisk();loadAutomatedScreen();
     $$(".nav-item").forEach(b=>b.addEventListener("click",()=>navigate(b.dataset.view)));
     $$("[data-go]").forEach(b=>b.addEventListener("click",()=>navigate(b.dataset.go)));
     $("#mobileMenu").addEventListener("click",()=>$("#sidebar").classList.toggle("open"));
@@ -396,7 +598,7 @@
     $("#overviewTabs").addEventListener("click",e=>{const b=e.target.closest("[data-filter]");if(!b)return;$$(".tab",$("#overviewTabs")).forEach(x=>x.classList.toggle("active",x===b));state.strategy=b.dataset.filter;renderOverview();});
     $("#applyFilters").addEventListener("click",renderScanner);
     ["strategyFilter","minScore","sortSignals"].forEach(id=>$("#"+id).addEventListener("change",renderScanner));
-    $("#exportSignals").addEventListener("click",()=>{const latest=new Map();state.candidates.forEach(r=>{if(!latest.has(r.symbol)||latest.get(r.symbol).date<r.date)latest.set(r.symbol,r);});const rows=[...latest.values()].map(r=>({symbol:r.symbol,date:r.date,strategy:r.strategy,close:r.close,rsi:r.rsi,relative_volume:r.relVol,stop_estimate:r.stop,edge_score:r.score,source:state.source}));download("edge-nse-candidates.csv",csvFor(rows));});
+    $("#exportSignals").addEventListener("click",()=>{const latest=new Map();state.candidates.forEach(r=>{if(!latest.has(r.symbol)||latest.get(r.symbol).date<r.date)latest.set(r.symbol,r);});const rows=[...latest.values()].map(r=>{const p=buildTradePlan(r);return {symbol:r.symbol,date:r.date,strategy:r.strategy,signal_close:r.close,quality_tier:p.tier,setup_score:r.score,entry_trigger:p.entryTrigger,stop_loss:p.stop,take_profit_1:p.target1,take_profit_2:p.target2,holding_sessions:`2-${p.maxHoldSessions}`,suggested_quantity:p.qty,position_value:p.positionValue,risk_budget:p.riskBudget,estimated_cost:p.estimatedCost,source:state.source};});download("edge-nse-proposals.csv",csvFor(rows));});
     const ingestCSV=async fileListLike=>{
       const files=Array.from(fileListLike||[]).filter(Boolean);
       if(!files.length)return;
@@ -423,13 +625,26 @@
     const dz=$("#dropzone");["dragenter","dragover"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add("dragover");}));["dragleave","drop"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove("dragover");}));dz.addEventListener("drop",async e=>{await ingestCSV(e.dataTransfer.files);});
     $("#loadDemo").addEventListener("click",()=>setBars(syntheticData(),"Synthetic demo data",true));
     $("#downloadTemplate").addEventListener("click",()=>download("edge-nse-ohlcv-template.csv","date,symbol,open,high,low,close,volume\n2025-01-02,ABC,100,103,99,102,150000\n","text/csv;charset=utf-8"));
+    $$("[data-setting]").forEach(el=>el.addEventListener("change",()=>updateSettingsFromElement(el)));
     $("#calculateRisk").addEventListener("click",calcRisk);
-    ["capitalInput","riskInput","entryInput","stopInput","targetInput","costInput"].forEach(id=>$("#"+id).addEventListener("change",calcRisk));
-    $("#saveRiskPlan").addEventListener("click",()=>{const p=calcRisk();if(!p)return;addLedger({...p,symbol:"MANUAL",strategy:"breakout"});});
-    document.addEventListener("click",e=>{const b=e.target.closest("[data-add-symbol]");if(b){addLedger({symbol:b.dataset.addSymbol,strategy:b.dataset.addStrategy,entry:Number(b.dataset.addEntry),stop:Number(b.dataset.addStop),target:Number(b.dataset.addEntry)+2*(Number(b.dataset.addEntry)-Number(b.dataset.addStop)),notes:"Candidate from browser scanner"});}});
-    $("#ledgerTable").addEventListener("change",e=>{const s=e.target.closest("[data-status-id]"),p=e.target.closest("[data-pnl-id]");if(s){const item=state.ledger.find(x=>x.id===s.dataset.statusId);if(item)item.status=s.value;saveLedger();}if(p){const item=state.ledger.find(x=>x.id===p.dataset.pnlId);if(item)item.realizedPnl=Number(p.value)||0;saveLedger();}});
-    $("#ledgerTable").addEventListener("click",e=>{const b=e.target.closest("[data-delete-id]");if(b){state.ledger=state.ledger.filter(x=>x.id!==b.dataset.deleteId);saveLedger();toast("Ledger entry deleted.");}});
-    $("#exportLedger").addEventListener("click",()=>download("edge-nse-paper-ledger.csv",csvFor(state.ledger)));
+    ["capitalInput","riskInput","costInput"].forEach(id=>$("#"+id).addEventListener("change",e=>{
+      const el=e.currentTarget,key=id==="capitalInput"?"capital":id==="riskInput"?"riskPct":"costPct";
+      let value=Number(el.value);if(!Number.isFinite(value))return;
+      if(key==="capital")value=Math.max(0,value);if(key==="riskPct")value=Math.min(2,Math.max(.01,value));if(key==="costPct")value=Math.min(5,Math.max(0,value));
+      state.settings[key]=value;safeStore(STORAGE_SETTINGS,state.settings);syncSettingsUI();calcRisk();renderScanner();
+    }));
+    ["entryInput","stopInput","targetInput"].forEach(id=>$("#"+id).addEventListener("change",calcRisk));
+    $("#saveRiskPlan").addEventListener("click",()=>{const p=calcRisk();if(!p)return;addLedger({...p,symbol:"MANUAL",strategy:"manual",monitorEnabled:false,notes:"Manual risk-calculator plan; not linked to an NSE EOD symbol."});});
+    document.addEventListener("click",e=>{
+      const propose=e.target.closest("[data-propose-symbol]");
+      if(propose){const candidate=state.candidates.find(x=>x.symbol===propose.dataset.proposeSymbol);if(!candidate){toast("Candidate is no longer in the current screen. Refresh the data first.");return;}addLedger(buildTradePlan(candidate));return;}
+      const del=e.target.closest("[data-delete-id]");if(del){state.ledger=state.ledger.filter(x=>x.id!==del.dataset.deleteId);saveLedger();toast("Proposal removed from this browser.");return;}
+      const ack=e.target.closest("[data-ack-action]");if(ack){const item=state.ledger.find(x=>x.id===ack.dataset.ackAction);if(item){item.exitActionRequired=false;item.actionAcknowledgedAt=state.lastDate;item.monitorStatus=item.status==="Open"?"Open · exit review acknowledged; EOD tracking continues":`${item.outcome||"Closed"} · exit action acknowledged`;saveLedger();toast("Exit action acknowledged locally; the paper outcome is unchanged.");}return;}
+      const cancel=e.target.closest("[data-cancel-proposal]");if(cancel){const item=state.ledger.find(x=>x.id===cancel.dataset.cancelProposal);if(item&&item.status==="Planned"){item.status="Cancelled";item.outcome="EXPIRED";item.exitReason="Cancelled manually";setTradeMonitorState(item,"CANCELLED BY USER",false);saveLedger();toast("Proposal cancelled locally.");}return;}
+      const close=e.target.closest("[data-manual-close]");if(close){const item=state.ledger.find(x=>x.id===close.dataset.manualClose);if(item&&item.status==="Open"&&Number.isFinite(Number(item.lastPrice))){const px=Number(item.lastPrice),qty=Number(item.qty)||0,entry=Number(item.fillPrice||item.entry)||0;item.status="Closed";item.outcome="MANUAL_EXIT";item.exitPrice=px;item.exitDate=item.lastPriceDate||state.lastDate;item.exitReason="Manually marked exited at latest available EOD close";item.realizedPnl=(px-entry)*qty-(Number(item.estimatedCost)||0);item.exitActionRequired=false;item.manualClosed=true;item.monitorStatus="MANUAL EXIT · user-recorded at latest EOD close";saveLedger();toast("Paper trade marked manually exited.");}return;}
+    });
+    $("#refreshEod").addEventListener("click",async()=>{const btn=$("#refreshEod");btn.disabled=true;btn.textContent="↻ Refreshing…";await loadAutomatedScreen();btn.disabled=false;btn.textContent="↻ Refresh EOD";toast("EOD feed checked. Review the tracker status and pipeline date.");});
+    $("#exportLedger").addEventListener("click",()=>download("edge-nse-proposal-tracker.csv",csvFor(state.ledger)));
     $("#clearLedger").addEventListener("click",()=>{if(confirm("Delete all local paper ledger entries? Export a backup first if needed.")){state.ledger=[];saveLedger();toast("Local ledger cleared.");}});
     $$("[data-gate]").forEach(el=>el.addEventListener("change",()=>{state.gates[el.dataset.gate]=el.checked;safeStore(STORAGE_GATES,state.gates);updateGateUI();toast("Research checklist updated locally. This does not approve live trading.");}));
     window.addEventListener("resize",drawEquityChart);

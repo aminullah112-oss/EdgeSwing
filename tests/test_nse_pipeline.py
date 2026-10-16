@@ -173,8 +173,43 @@ class PipelineTests(unittest.TestCase):
 
     def test_output_placeholder_is_valid_json(self):
         payload = json.loads((ROOT / "data" / "latest_screen.json").read_text())
-        self.assertEqual(payload["status"], "awaiting_first_run")
-        self.assertEqual(payload["schema_version"], 1)
+        self.assertIn(payload["status"], {"awaiting_first_run", "ready", "warming_up", "stale", "source_unavailable"})
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertIn("recent_market_dates", payload)
+        self.assertIn("recent_eod_bars", payload)
+
+
+    def test_recent_eod_snapshot_contains_latest_compact_bars_and_ema(self):
+        rows = []
+        base = pipe.dt.date(2026, 9, 1)
+        for i in range(220):
+            date = (base + pipe.dt.timedelta(days=i)).isoformat()
+            if (base + pipe.dt.timedelta(days=i)).weekday() >= 5:
+                continue
+            close = 100 + i * 0.1
+            rows.append({"date": date, "symbol": "ABC", "open": close, "high": close + 1,
+                         "low": close - 1, "close": close, "volume": 1000})
+        dates, bars = pipe.recent_eod_snapshot(rows, sessions=12)
+        self.assertEqual(len(dates), 12)
+        self.assertEqual(len(bars), 12)
+        self.assertEqual(len(bars[0]), 8)
+        self.assertEqual(bars[-1][0], dates[-1])
+        self.assertEqual(bars[-1][1], "ABC")
+        self.assertIsNotNone(bars[-1][6])
+
+    def test_recent_eod_snapshot_flags_large_close_changes(self):
+        rows = []
+        base = pipe.dt.date(2026, 9, 1)
+        for i in range(18):
+            day = base + pipe.dt.timedelta(days=i)
+            if day.weekday() >= 5:
+                continue
+            close = 100 if day < base + pipe.dt.timedelta(days=15) else 50
+            rows.append({"date": day.isoformat(), "symbol": "ABC", "open": close, "high": close + 1,
+                         "low": close - 1, "close": close, "volume": 1000})
+        dates, bars = pipe.recent_eod_snapshot(rows, sessions=12)
+        flagged = [b for b in bars if b[7] is not None and abs(b[7]) >= 40]
+        self.assertTrue(flagged)
 
 
 if __name__ == "__main__":

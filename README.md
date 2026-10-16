@@ -1,3 +1,5 @@
+> **For an existing live EDGE NSE / EdgeSwing repository:** this release archive is a selective upgrade overlay, not a fresh repository image. Extract it at the repository root and replace only the files included in the archive. It intentionally omits `data/history.csv`, `data/latest_screen.json`, `data/last_run.json`, and `data/etf_symbols.csv` so your live 260-session history, current screen and ETF cache are preserved. After committing the code files, the workflow runs on source changes and publishes the new proposal dashboard/EOD snapshot. If it does not trigger, open **Actions → Refresh EDGE NSE research screen → Run workflow**.
+
 # EDGE NSE — Automated EOD Research Screener
 
 A static GitHub Pages front end plus a scheduled Python ingestion and screening pipeline. The website has no build step and no browser-side external market-data calls. A GitHub Actions workflow fetches end-of-day files, validates and normalizes them, computes indicators, screens candidates, and commits the latest results for GitHub Pages to serve.
@@ -18,7 +20,7 @@ A static GitHub Pages front end plus a scheduled Python ingestion and screening 
 
 ## Setup and deployment
 
-1. Upload **the contents** of this package to the root of the intended GitHub repository. The archive includes `index.html`, `app.js`, `styles.css`, `.github/workflows/refresh-edge-nse.yml`, `.github/scripts/update_nse_data.py` and the `data/` folder.
+1. For a new repository, use the full project package and upload its contents to the root. For the current live EdgeSwing repository, use the selective upgrade archive: extract at the root and upload only the files included in that archive; do not replace the existing `data/` files.
 2. In **Settings → Pages**, set **Source** to **GitHub Actions**. This matters: commits made by `GITHUB_TOKEN` do not themselves trigger a branch-based Pages rebuild, so this workflow publishes a Pages artifact directly after refreshing the JSON.
 3. The workflow already requests `contents: write`, `pages: write` and `id-token: write`. Ensure repository Actions permissions and Pages deployment policy allow these permissions.
 4. Open **Actions → Refresh EDGE NSE research screen → Run workflow** to start the initial backfill immediately. The first run automatically bootstraps history when it detects fewer than 205 equity sessions. Use `force_backfill` only to rebuild the lookback or recover missing recent history.
@@ -68,3 +70,28 @@ Accepted dates include `YYYY-MM-DD`, `DD-MMM-YYYY` and unambiguous numeric day/m
 ## Safety
 
 This is a research utility, not investment advice. There is no live broker integration, secret storage, order placement, or automatic trade execution. Do not trade from synthetic demo data, stale output, unadjusted-price history, or an unvalidated heuristic score.
+
+## Trade proposals and end-of-day paper tracking
+
+The Stock scanner now turns each screened candidate into a **research proposal** using the capital/risk profile saved in the current browser. The proposal view shows:
+
+- **Setup quality tier:** High (score 70–100), Medium (50–69), or Low (0–49). These bands describe only the existing heuristic score; they are not win probabilities.
+- **Entry trigger:** a paper stop-entry trigger set 0.25% above the latest completed signal close, so the proposal is not assumed filled at the same close used to generate it.
+- **Initial stop:** the candidate ATR-based stop estimate (`close − 2 × ATR(14)`).
+- **Targets:** target 1 at 1R and target 2 at 2R from the planned entry. The tracker recalculates target rails if the entry fills after a gap.
+- **Position size:** integer share quantity based on the risk-per-proposal budget, remaining 1.5% aggregate planned/open risk cap, and 15% capital notional cap. The dashboard also estimates round-trip costs from the user-supplied percentage.
+- **Time rules:** entry trigger valid for three sessions; after entry, the default max hold is ten sessions. The user can select a 2, 5, 7 or 10 session max holding window.
+
+### EOD tracking logic
+
+`latest_screen.json` includes `recent_market_dates` and compact `recent_eod_bars` for the latest 12 equity sessions. The browser uses these bars to reconcile local proposals on each visit, even if the page was not opened every day:
+
+- Entry activates if a daily high reaches the entry trigger. If the open gaps above the trigger, the open is used as the hypothetical fill and quantity is reduced if required by the stored risk/notional limits.
+- Stop-loss takes precedence if stop and target 2 both appear to be touched in the same daily bar, since daily OHLC cannot determine their intraday order.
+- Target 2 before stop = **PASS**. Stop-loss or two consecutive EOD closes below EMA20 = **FAIL**. Reaching max holding sessions without target 2 = **TIME EXIT**. No trigger within three sessions = **EXPIRED**.
+- A close-to-close move of at least 40% during a tracked proposal pauses automated outcome interpretation and requests manual review for a potential corporate action or data issue.
+- If tracking falls outside the published recent-bar window, the tracker requests manual reconciliation instead of fabricating a result.
+
+**Important browser-only limitation:** the proposal ledger and capital settings are stored in `localStorage`, so they belong to that browser/device only. GitHub Actions updates shared market data, but it cannot see the private local ledger. The page must be opened to apply updates to the local ledger; it cannot send an alert while closed, and other devices will not see the same proposals unless you export/import the tracker CSV. No order is placed; hypothetical EOD fill rules are not the same as broker fills.
+
+After adding this release to the deployed repository, run **Actions → Refresh EDGE NSE research screen → Run workflow** once. That generates the new `recent_eod_bars` field and deploys the updated proposal dashboard. Confirm a `ready` run and nonzero recent EOD bar count before using the tracker.
