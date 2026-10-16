@@ -32,12 +32,13 @@
     // When both numbers are <= 12, reject rather than silently guessing DD/MM or MM/DD.
     m=v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
     if(m){const d=+m[1],mo=+m[2],y=+m[3];if(d<=12&&mo<=12)return null;if(d<1||d>31||mo<1||mo>12)return null;const dt=new Date(Date.UTC(y,mo-1,d));if(dt.getUTCFullYear()===y&&dt.getUTCMonth()===mo-1&&dt.getUTCDate()===d)return dt.toISOString().slice(0,10);return null;}
-    // Dash-separated numeric dates are interpreted as DD-MM-YYYY; ISO is preferred.
+    // Numeric DD-MM-YYYY is accepted only when the day/month order is unambiguous.
+    // ISO (YYYY-MM-DD) is handled above and remains preferred.
     m=v.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-    if(m){const d=+m[1],mo=+m[2],y=+m[3];if(d<1||d>31||mo<1||mo>12)return null;const dt=new Date(Date.UTC(y,mo-1,d));if(dt.getUTCFullYear()===y&&dt.getUTCMonth()===mo-1&&dt.getUTCDate()===d)return dt.toISOString().slice(0,10);}
+    if(m){const d=+m[1],mo=+m[2],y=+m[3];if(d<=12&&mo<=12)return null;if(d<1||d>31||mo<1||mo>12)return null;const dt=new Date(Date.UTC(y,mo-1,d));if(dt.getUTCFullYear()===y&&dt.getUTCMonth()===mo-1&&dt.getUTCDate()===d)return dt.toISOString().slice(0,10);}
     return null;
   }
-  function parseCSV(text) {
+  function parseCSV(text, sourceName="CSV") {
     const lines=String(text||"").replace(/^\uFEFF/,"").split(/\r?\n/).map((line,index)=>({line,index:index+1})).filter(x=>x.line.trim());
     if(lines.length<2) throw new Error("CSV must contain a header and at least one data row.");
     const parseLine = line => { const out=[]; let cur="", quoted=false; for(let i=0;i<line.length;i++){const ch=line[i];if(ch==='"'&&line[i+1]==='"'&&quoted){cur+='"';i++;}else if(ch==='"'){quoted=!quoted;}else if(ch===","&&!quoted){out.push(cur.trim());cur="";}else cur+=ch;}out.push(cur.trim());return out; };
@@ -66,15 +67,15 @@
       const rawDate=cells[ix.date]||"",date=normalizeDate(rawDate),symbol=String(cells[ix.symbol]||"").trim().toUpperCase();
       const lineIssues=[];
       if(cells.length>headers.length)lineIssues.push(`found ${cells.length} fields but the header has ${headers.length}; check for unquoted commas inside numeric values (quote values like "1,50,000")`);
-      if(!date){const slashAmbiguous=/^\s*\d{1,2}\/\d{1,2}\/\d{4}\s*$/.test(rawDate)&&(()=>{const a=rawDate.trim().split("/").map(Number);return a[0]<=12&&a[1]<=12;})();lineIssues.push(slashAmbiguous?`ambiguous date "${rawDate}" (slash dates where both fields are 01–12 are rejected; convert to YYYY-MM-DD or DD-MMM-YYYY)`:`invalid date "${rawDate||"(blank)"}" (use YYYY-MM-DD, DD-MMM-YYYY, or an unambiguous DD/MM/YYYY)`);}
+      if(!date){const numericAmbiguous=/^\s*\d{1,2}[\/-]\d{1,2}[\/-]\d{4}\s*$/.test(rawDate)&&(()=>{const a=rawDate.trim().split(/[\/-]/).map(Number);return a[0]<=12&&a[1]<=12;})();lineIssues.push(numericAmbiguous?`ambiguous numeric date "${rawDate}" (when both day and month are 01–12, convert it to YYYY-MM-DD or DD-MMM-YYYY)`:`invalid date "${rawDate||"(blank)"}" (use YYYY-MM-DD, DD-MMM-YYYY, or an unambiguous DD/MM/YYYY / DD-MM-YYYY)`);}
       if(!symbol)lineIssues.push("missing symbol");
       const parseNumber=raw=>{const v=String(raw??"").trim();if(!v)return NaN;const cleaned=v.replace(/[₹,\s]/g,"").replace(/^\((.*)\)$/,"-$1");return cleaned?Number(cleaned):NaN;};
-      const r={date,symbol,sourceLine};
+      const r={date,symbol,sourceLine,sourceFile:sourceName};
       for(const k of ["open","high","low","close","volume"]){r[k]=parseNumber(cells[ix[k]]);if(!Number.isFinite(r[k]))lineIssues.push(`invalid or blank ${k} value "${cells[ix[k]]??""}"`);}
       if(!lineIssues.length){
         if(r.open<=0||r.high<=0||r.low<=0||r.close<=0||r.volume<0||r.high<Math.max(r.open,r.close,r.low)||r.low>Math.min(r.open,r.close,r.high))lineIssues.push("impossible OHLC or negative volume values");
       }
-      if(lineIssues.length)issues.push(`Line ${sourceLine}: ${lineIssues.join("; ")}.`);
+      if(lineIssues.length)issues.push(`${sourceName} · line ${sourceLine}: ${lineIssues.join("; ")}.`);
       else rows.push(r);
     }
     if(issues.length){const err=new Error(`CSV rejected: ${issues.length} row issue(s). Fix the listed lines; no partial import was made.`);err.details=issues;throw err;}
@@ -89,8 +90,9 @@
     const errors=[],warnings=[],seen=new Map(),counts=new Map(),invalidRows=[];
     for(const r of bars){
       const key=r.symbol+"|"+r.date;
-      if(seen.has(key))errors.push(`Duplicate symbol/date row ${r.symbol} ${r.date} (CSV lines ${seen.get(key)} and ${r.sourceLine??"unknown"}).`);
-      else seen.set(key,r.sourceLine??"unknown");
+      const rowLocation=row=>`${row.sourceFile||"CSV"} line ${row.sourceLine??"unknown"}`;
+      if(seen.has(key))errors.push(`Duplicate symbol/date row ${r.symbol} ${r.date} (${rowLocation(seen.get(key))} and ${rowLocation(r)}).`);
+      else seen.set(key,r);
       counts.set(r.symbol,(counts.get(r.symbol)||0)+1);
       if(!Number.isFinite(r.open)||!Number.isFinite(r.high)||!Number.isFinite(r.low)||!Number.isFinite(r.close)||!Number.isFinite(r.volume)||r.open<=0||r.high<=0||r.low<=0||r.close<=0||r.volume<0||r.high<Math.max(r.open,r.close,r.low)||r.low>Math.min(r.open,r.close,r.high))invalidRows.push(`Line ${r.sourceLine??"unknown"}: invalid OHLCV values for ${r.symbol} ${r.date}.`);
     }
@@ -100,6 +102,22 @@
     const short=symbols.filter(s=>counts.get(s)<200);
     if(short.length)warnings.push(`${short.length} symbol(s) have fewer than 200 rows; the SMA200 trend filter cannot qualify them. Symbols: ${short.slice(0,8).join(", ")}${short.length>8?", …":""}.`);
     if(!symbols.some(s=>["NIFTY50","NIFTY_50"].includes(s)))warnings.push("NIFTY50 benchmark is missing. Relative-strength signals are disabled until a NIFTY50 or NIFTY_50 series is included.");
+    // Flag abrupt close-to-close discontinuities as a corporate-action/data-quality review item.
+    // The website does not adjust prices or infer that a split/bonus definitely occurred.
+    const bySymbol=new Map();
+    for(const r of bars){if(!bySymbol.has(r.symbol))bySymbol.set(r.symbol,[]);bySymbol.get(r.symbol).push(r);}
+    const jumps=[];
+    for(const [symbol,rows] of bySymbol){
+      rows.sort((a,b)=>a.date.localeCompare(b.date));
+      for(let i=1;i<rows.length;i++){
+        const prev=rows[i-1].close,cur=rows[i].close;
+        if(prev>0&&cur>0&&Math.abs(cur/prev-1)>=0.4){
+          const pct=(cur/prev-1)*100;
+          jumps.push(`${symbol} ${rows[i].date} (${pct>0?"+":""}${pct.toFixed(1)}%)`);
+        }
+      }
+    }
+    if(jumps.length){const shown=jumps.slice(0,10);warnings.push(`${jumps.length} possible corporate-action/data discontinuity event(s): ${shown.join(", ")}${jumps.length>shown.length?`, and ${jumps.length-shown.length} more`:""}. Review adjusted prices and source data before screening; this warning does not adjust bars.`);}
     warnings.push("Source authenticity, corporate actions and point-in-time universe membership are not verified by this browser.");
     return {passed:errors.length===0,errors,warnings,issues:[...errors,...warnings],symbols,dates};
   }
@@ -301,20 +319,30 @@
     $("#applyFilters").addEventListener("click",renderScanner);
     ["strategyFilter","minScore","sortSignals"].forEach(id=>$("#"+id).addEventListener("change",renderScanner));
     $("#exportSignals").addEventListener("click",()=>{const latest=new Map();state.candidates.forEach(r=>{if(!latest.has(r.symbol)||latest.get(r.symbol).date<r.date)latest.set(r.symbol,r);});const rows=[...latest.values()].map(r=>({symbol:r.symbol,date:r.date,strategy:r.strategy,close:r.close,rsi:r.rsi,relative_volume:r.relVol,stop_estimate:r.stop,edge_score:r.score,source:state.source}));download("edge-nse-candidates.csv",csvFor(rows));});
-    const ingestCSV=async file=>{
-      if(!file)return;
-      try{
-        const bars=parseCSV(await file.text());
-        const v=validateBars(bars);
-        if(!v.passed){renderUploadFeedback("Upload rejected. The active dataset and its Data health panel are unchanged.",v.errors);toast(`CSV rejected: ${v.errors.length} structural issue(s). Expand the import feedback to review all affected lines.`);return;}
-        setBars(bars,file.name,false);
-      }catch(err){
-        renderUploadFeedback(err.message||"CSV import failed. The active dataset is unchanged.",err.details||[]);
-        toast("CSV rejected. The active dataset is unchanged; review the import feedback for details.");
+    const ingestCSV=async fileListLike=>{
+      const files=Array.from(fileListLike||[]).filter(Boolean);
+      if(!files.length)return;
+      const merged=[],parseErrors=[];
+      // Read and validate each file independently, then merge all bars into one chronological dataset.
+      // Any failed file rejects the entire batch so the active dataset remains internally consistent.
+      for(const file of files){
+        try{merged.push(...parseCSV(await file.text(),file.name));}
+        catch(err){
+          const details=Array.isArray(err.details)&&err.details.length?err.details.map(d=>String(d)): [`${file.name}: ${err.message||"CSV import failed."}`];
+          parseErrors.push(...details);
+        }
       }
+      if(parseErrors.length){
+        renderUploadFeedback(`Upload rejected: ${parseErrors.length} issue(s) found across ${files.length} file(s). The active dataset and Data health panel are unchanged.`,parseErrors);
+        toast(`CSV batch rejected: ${parseErrors.length} issue(s). Review the import feedback.`);return;
+      }
+      merged.sort((a,b)=>a.symbol.localeCompare(b.symbol)||a.date.localeCompare(b.date));
+      const v=validateBars(merged);
+      if(!v.passed){renderUploadFeedback("Upload rejected. The active dataset and its Data health panel are unchanged.",v.errors);toast(`CSV rejected: ${v.errors.length} structural issue(s). Expand the import feedback to review all affected lines.`);return;}
+      setBars(merged,files.length===1?files[0].name:`${files.length} CSV files combined`,false);
     };
-    $("#csvUpload").addEventListener("change",async e=>{const file=e.target.files[0];await ingestCSV(file);e.target.value="";});
-    const dz=$("#dropzone");["dragenter","dragover"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add("dragover");}));["dragleave","drop"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove("dragover");}));dz.addEventListener("drop",async e=>{await ingestCSV(e.dataTransfer.files[0]);});
+    $("#csvUpload").addEventListener("change",async e=>{await ingestCSV(e.target.files);e.target.value="";});
+    const dz=$("#dropzone");["dragenter","dragover"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add("dragover");}));["dragleave","drop"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove("dragover");}));dz.addEventListener("drop",async e=>{await ingestCSV(e.dataTransfer.files);});
     $("#loadDemo").addEventListener("click",()=>setBars(syntheticData(),"Synthetic demo data",true));
     $("#downloadTemplate").addEventListener("click",()=>download("edge-nse-ohlcv-template.csv","date,symbol,open,high,low,close,volume\n2025-01-02,ABC,100,103,99,102,150000\n","text/csv;charset=utf-8"));
     $("#calculateRisk").addEventListener("click",calcRisk);

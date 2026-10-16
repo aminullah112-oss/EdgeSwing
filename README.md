@@ -16,7 +16,7 @@ If using an existing repository, commit these files to the intended branch and e
 ## Features
 
 - Overview dashboard with synthetic demo prices, explicit empty-state guidance, and a release checklist.
-- Browser-based CSV import and structural OHLCV validation.
+- Browser-based single-CSV or multi-file CSV import with structural OHLCV validation and cross-file duplicate checks.
 - Rule-based breakout, trend-pullback and relative-strength screening.
 - Heuristic candidate ranking and CSV export.
 - Position-sizing / stop-loss / reward-to-risk calculator.
@@ -37,9 +37,9 @@ The importer also recognizes common NSE cash-market bhavcopy headers, including:
 
 When a series column is present, only `EQ` rows are imported; other series are deliberately excluded to avoid duplicate symbol/date records. Comma-grouped numeric cells such as `"1,50,000"` are supported when correctly quoted as CSV fields. If a file has unquoted thousands separators, re-export or quote those values first because commas are also the CSV column delimiter.
 
-Dates are normalized from `YYYY-MM-DD`, `DD-MMM-YYYY` (for example, `15-Oct-2026`), and unambiguous `DD/MM/YYYY` formats. Slash-separated dates where both the day and month are 01–12 (for example, `10/05/2026`) are rejected rather than guessed; convert them to ISO dates to prevent a silent month/day swap. Invalid calendar dates such as `31-Feb-2026` are rejected.
+Dates are normalized from `YYYY-MM-DD`, `DD-MMM-YYYY` (for example, `15-Oct-2026`), and unambiguous numeric `DD/MM/YYYY` or `DD-MM-YYYY` formats. Numeric slash- or dash-separated dates where both the day and month are 01–12 (for example, `10/05/2026` or `10-05-2026`) are rejected rather than guessed; convert them to ISO dates to prevent a silent month/day swap. Invalid calendar dates such as `31-Feb-2026` are rejected. Select several daily bhavcopy CSVs at once or drag them together onto the dropzone; the browser combines them before duplicate-date validation and screening. Every selected file must use a recognized OHLCV or NSE bhavcopy header, and the whole batch is rejected if any file/row has an import error.
 
-The complete upload is rejected if any data row has invalid dates/numbers/OHLC values or if duplicate symbol/date keys remain. The import feedback lists every detected bad line, while the current data and Data health panel remain unchanged until a valid file is loaded. Blank rows are ignored. Symbols with fewer than 200 rows are flagged because the trend filter requires SMA200. Relative-strength signals are disabled when a NIFTY50/NIFTY_50 benchmark series is missing. The scanner evaluates only each symbol’s latest available bar and ignores symbols whose last date is more than 10 calendar days behind the dataset’s latest date.
+The complete upload batch is rejected if any data row has invalid dates/numbers/OHLC values or if duplicate symbol/date keys remain, including duplicates across different files. The import feedback lists detected bad lines with source file names, while the current data and Data health panel remain unchanged until a valid batch is loaded. Blank rows are ignored. The data health panel flags close-to-close moves of 40% or more as possible corporate-action or data discontinuities. This is only a warning: prices are not split/bonus adjusted, so use adjusted historical data whenever possible and review every alert before interpreting the scanner output. Symbols with fewer than 200 rows are flagged because the trend filter requires SMA200. Relative-strength signals are disabled when a NIFTY50/NIFTY_50 benchmark series is missing. The scanner evaluates only each symbol’s latest available bar and ignores symbols whose last date is more than 10 calendar days behind the dataset’s latest date.
 
 An NSE equity bhavcopy usually does **not** contain an index benchmark row. Add a separate NIFTY50/NIFTY_50 history using the standard template if you want relative-strength signals. Use properly adjusted data and a provider you are licensed to use. For reliable backtests, include delisted names and point-in-time universe membership where possible.
 
@@ -50,7 +50,7 @@ An NSE equity bhavcopy usually does **not** contain an index benchmark row. Add 
 - No live prices, live broker connection, automated order routing or live trading are implemented.
 - Browser scanner uses the latest available completed bar per symbol, simple-average 14-bar ATR, Wilder-smoothed RSI, and simplified indicator rules. It is a candidate discovery aid, not a validated strategy. The stop estimate intentionally uses simple-average ATR and may differ from charts using Wilder ATR.
 - The equity chart on the overview is illustrative and is explicitly not a backtest.
-- Data validation checks structure only; it cannot verify source authenticity, corporate actions or survivorship bias.
+- Data validation checks structure and warns about close-to-close changes of at least 40%, but it cannot verify source authenticity, determine whether a move is a corporate action, adjust prices for splits/bonuses, or verify survivorship bias. Multi-file upload makes it easier to combine daily bars but does not make unadjusted bhavcopy history safe for research.
 - Paper ledger and readiness checklist are stored only in the current browser and are not synced.
 - A checked release checklist is a personal note, not authorization or proof of readiness.
 - For rigorous backtesting, use the separate Python project, calibrated transaction costs, walk-forward validation and forward paper trading.
