@@ -1,30 +1,33 @@
 {
   "schema_version": 1,
   "status": "ready",
-  "source": "NSE CM-UDiFF Common Bhavcopy (EQ series) + NSE daily NIFTY 50 snapshot (historical API fallback)",
+  "source": "NSE CM-UDiFF Common Bhavcopy (EQ series), official NSE ETF security list, and NSE daily NIFTY 50 snapshot (historical API fallback)",
   "source_urls": {
     "equity_bhavcopy": "https://www.nseindia.com/all-reports",
+    "etf_security_list": "https://nsearchives.nseindia.com/content/equities/eq_etfseclist.csv",
     "index_daily_snapshots": "https://www.nseindia.com/all-reports",
     "index_history_fallback": "https://www.nseindia.com/reports-indices-historical-index-data"
   },
-  "generated_at_utc": "2026-10-16T08:02:33+00:00",
-  "as_of_ist": "2026-10-16T13:32:33+05:30",
+  "etf_exclusion_source": "NSE official ETF security list",
+  "etf_symbols_excluded_from_history": 341,
+  "generated_at_utc": "2026-10-16T08:10:53+00:00",
+  "as_of_ist": "2026-10-16T13:40:53+05:30",
   "latest_market_date": "2026-10-15",
   "history_start": "2025-09-25",
   "trading_sessions": 260,
-  "bars_count": 633077,
-  "symbols_count": 2974,
-  "eligible_symbols": 2675,
-  "symbols_with_200_sessions": 2000,
-  "symbols_over_turnover_floor": 1400,
-  "stale_symbols_skipped": 299,
-  "corporate_action_flagged_symbols": 134,
+  "bars_count": 553792,
+  "symbols_count": 2633,
+  "eligible_symbols": 2335,
+  "symbols_with_200_sessions": 1729,
+  "symbols_over_turnover_floor": 1287,
+  "stale_symbols_skipped": 298,
+  "corporate_action_flagged_symbols": 118,
   "benchmark_latest_date": "2026-10-15",
-  "qualified_count": 17,
+  "qualified_count": 15,
   "strategy_counts": {
     "breakout": 6,
     "pullback": 4,
-    "relative_strength": 12
+    "relative_strength": 10
   },
   "filters": {
     "min_avg_turnover_20_sessions_inr": 10000000.0,
@@ -35,7 +38,9 @@
     "stop_estimate": "close - 2 × simple-average ATR(14)"
   },
   "warnings": [
-    "134 symbol(s) with a close move of at least 40% are excluded until adjusted history is reviewed: AASTHA (1 move(s)), ABANSENT (1 move(s)), ABINFRA (1 move(s)), AGIIL (1 move(s)), AHCL (1 move(s)), AIIL (1 move(s)), AJMERA (1 move(s)), ALLCARGO (1 move(s)), ANANDRATHI (1 move(s)), ANGELONE (1 move(s)), AQYLON (1 move(s)), ARROWGREEN (1 move(s)) ….",
+    "No new NSE CM-UDiFF archive was fetched in this run; existing stored history was retained.",
+    "Excluded 341 ETF symbol(s) using NSE official ETF security list before screening.",
+    "118 symbol(s) with a close move of at least 40% are excluded until adjusted history is reviewed: AASTHA (1 move(s)), ABANSENT (1 move(s)), ABINFRA (1 move(s)), AGIIL (1 move(s)), AHCL (1 move(s)), AIIL (1 move(s)), AJMERA (1 move(s)), ALLCARGO (1 move(s)), ANANDRATHI (1 move(s)), ANGELONE (1 move(s)), AQYLON (1 move(s)), ARROWGREEN (1 move(s)) ….",
     "Daily bhavcopy prices may be unadjusted for splits/bonuses. Corporate-action flags are conservative exclusions, not automatic adjustments.",
     "Screening is EOD-only and rule-based. Scores are not profit probabilities; no orders are sent."
   ],
@@ -298,40 +303,6 @@
       "atr14_sma": 55.2214,
       "avg_turnover_20d": 929615159.37,
       "return_60d": -8.32,
-      "benchmark_return_60d": -4.92
-    },
-    {
-      "symbol": "LIQUIDCASE",
-      "date": "2026-10-15",
-      "strategy": "relative_strength",
-      "strategies": [
-        "relative_strength"
-      ],
-      "close": 116.39,
-      "rsi": 100.0,
-      "rel_vol": 1.5592,
-      "score": 27,
-      "stop": 116.3129,
-      "atr14_sma": 0.0386,
-      "avg_turnover_20d": 2559474205.88,
-      "return_60d": 1.12,
-      "benchmark_return_60d": -4.92
-    },
-    {
-      "symbol": "LIQUIDSHRI",
-      "date": "2026-10-15",
-      "strategy": "relative_strength",
-      "strategies": [
-        "relative_strength"
-      ],
-      "close": 1125.77,
-      "rsi": 99.9432,
-      "rel_vol": 1.0509,
-      "score": 23,
-      "stop": 1125.3129,
-      "atr14_sma": 0.2286,
-      "avg_turnover_20d": 11771195.6,
-      "return_60d": 1.07,
       "benchmark_return_60d": -4.92
     }
   ]
