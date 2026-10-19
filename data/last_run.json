@@ -1,25 +1,25 @@
 {
-  "started_at_utc": "2026-10-16T18:44:34+00:00",
-  "completed_at_utc": "2026-10-16T18:44:53+00:00",
+  "started_at_utc": "2026-10-19T20:31:05+00:00",
+  "completed_at_utc": "2026-10-19T20:31:25+00:00",
   "status": "ready",
   "equity_ingestion": {
     "attempted_backfill": false,
     "downloaded_files": 1,
-    "downloaded_rows": 2692,
+    "downloaded_rows": 2699,
     "failed_requests": 0,
     "downloaded_dates": [
-      "2026-10-16"
+      "2026-10-19"
     ]
   },
-  "benchmark_rows_received": 261,
+  "benchmark_rows_received": 262,
   "benchmark_error": null,
   "etf_exclusion_source": "NSE official ETF security list",
-  "etf_symbols_excluded_from_history": 341,
-  "history_rows_after_dedup": 556131,
-  "screened_candidates": 48,
+  "etf_symbols_excluded_from_history": 343,
+  "history_rows_after_dedup": 558475,
+  "screened_candidates": 20,
   "warnings": [
-    "Excluded 341 ETF symbol(s) using NSE official ETF security list before screening.",
-    "119 symbol(s) with a close move of at least 40% are excluded until adjusted history is reviewed: AASTHA (1 move(s)), ABANSENT (1 move(s)), ABINFRA (1 move(s)), AGIIL (1 move(s)), AHCL (1 move(s)), AIIL (1 move(s)), AJMERA (1 move(s)), ALLCARGO (1 move(s)), ANANDRATHI (1 move(s)), ANGELONE (1 move(s)), AQYLON (1 move(s)), ARROWGREEN (1 move(s)) ….",
+    "Excluded 343 ETF symbol(s) using NSE official ETF security list before screening.",
+    "121 symbol(s) with a close move of at least 40% are excluded until adjusted history is reviewed: AASTHA (1 move(s)), ABANSENT (1 move(s)), ABINFRA (1 move(s)), AGIIL (1 move(s)), AHCL (1 move(s)), AIIL (1 move(s)), AJMERA (1 move(s)), ALLCARGO (1 move(s)), ANANDRATHI (1 move(s)), ANGELONE (1 move(s)), AQYLON (1 move(s)), ARROWGREEN (1 move(s)) ….",
     "Daily bhavcopy prices may be unadjusted for splits/bonuses. Corporate-action flags are conservative exclusions, not automatic adjustments.",
     "Screening is EOD-only and rule-based. Scores are not profit probabilities; no orders are sent."
   ]
