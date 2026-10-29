@@ -1,24 +1,24 @@
 {
-  "started_at_utc": "2026-10-28T20:11:45+00:00",
-  "completed_at_utc": "2026-10-28T20:12:21+00:00",
+  "started_at_utc": "2026-10-29T20:11:08+00:00",
+  "completed_at_utc": "2026-10-29T20:11:28+00:00",
   "status": "ready",
   "equity_ingestion": {
     "attempted_backfill": false,
     "downloaded_files": 1,
-    "downloaded_rows": 2712,
+    "downloaded_rows": 2713,
     "failed_requests": 0,
     "downloaded_dates": [
-      "2026-10-28"
+      "2026-10-29"
     ]
   },
-  "benchmark_rows_received": 268,
+  "benchmark_rows_received": 269,
   "benchmark_error": null,
   "etf_exclusion_source": "NSE official ETF security list",
-  "etf_symbols_excluded_from_history": 340,
-  "history_rows_after_dedup": 572588,
-  "screened_candidates": 24,
+  "etf_symbols_excluded_from_history": 331,
+  "history_rows_after_dedup": 574958,
+  "screened_candidates": 35,
   "warnings": [
-    "Excluded 340 ETF symbol(s) using NSE official ETF security list before screening.",
+    "Excluded 331 ETF symbol(s) using NSE official ETF security list before screening.",
     "123 symbol(s) with a close move of at least 40% are excluded until adjusted history is reviewed: AASTHA (1 move(s)), ABANSENT (1 move(s)), ABINFRA (1 move(s)), AGIIL (1 move(s)), AHCL (1 move(s)), AIIL (1 move(s)), AJMERA (1 move(s)), ALLCARGO (1 move(s)), ANANDRATHI (1 move(s)), ANGELONE (1 move(s)), AQYLON (1 move(s)), ARROWGREEN (1 move(s)) ….",
     "Daily bhavcopy prices may be unadjusted for splits/bonuses. Corporate-action flags are conservative exclusions, not automatic adjustments.",
     "Screening is EOD-only and rule-based. Scores are not profit probabilities; no orders are sent."
