@@ -1,23 +1,25 @@
 {
-  "started_at_utc": "2026-11-10T21:15:29+00:00",
-  "completed_at_utc": "2026-11-10T21:15:57+00:00",
+  "started_at_utc": "2026-11-11T21:50:19+00:00",
+  "completed_at_utc": "2026-11-11T21:50:57+00:00",
   "status": "ready",
   "equity_ingestion": {
     "attempted_backfill": false,
-    "downloaded_files": 0,
-    "downloaded_rows": 0,
+    "downloaded_files": 1,
+    "downloaded_rows": 2747,
     "failed_requests": 0,
-    "downloaded_dates": []
+    "downloaded_dates": [
+      "2026-11-11"
+    ]
   },
-  "benchmark_rows_received": 276,
+  "benchmark_rows_received": 277,
   "benchmark_error": null,
   "etf_exclusion_source": "NSE official ETF security list",
-  "etf_symbols_excluded_from_history": 0,
-  "history_rows_after_dedup": 591604,
-  "screened_candidates": 65,
+  "etf_symbols_excluded_from_history": 346,
+  "history_rows_after_dedup": 593993,
+  "screened_candidates": 68,
   "warnings": [
-    "No new NSE CM-UDiFF archive was fetched in this run; existing stored history was retained.",
-    "130 symbol(s) with a close move of at least 40% are excluded until adjusted history is reviewed: AASTHA (1 move(s)), ABANSENT (1 move(s)), ABINFRA (1 move(s)), AGIIL (1 move(s)), AHCL (1 move(s)), AIIL (1 move(s)), AJMERA (1 move(s)), ALLCARGO (1 move(s)), ANANDRATHI (1 move(s)), ANGELONE (1 move(s)), AQYLON (1 move(s)), ARROWGREEN (1 move(s)) ….",
+    "Excluded 346 ETF symbol(s) using NSE official ETF security list before screening.",
+    "131 symbol(s) with a close move of at least 40% are excluded until adjusted history is reviewed: AASTHA (1 move(s)), ABANSENT (1 move(s)), ABINFRA (1 move(s)), AGIIL (1 move(s)), AHCL (1 move(s)), AIIL (1 move(s)), AJMERA (1 move(s)), ALLCARGO (1 move(s)), ANANDRATHI (1 move(s)), ANGELONE (1 move(s)), AQYLON (1 move(s)), ARROWGREEN (1 move(s)) ….",
     "Daily bhavcopy prices may be unadjusted for splits/bonuses. Corporate-action flags are conservative exclusions, not automatic adjustments.",
     "Screening is EOD-only and rule-based. Scores are not profit probabilities; no orders are sent."
   ]
