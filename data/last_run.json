@@ -1,22 +1,22 @@
 {
-  "started_at_utc": "2026-11-17T22:50:20+00:00",
-  "completed_at_utc": "2026-11-17T22:50:57+00:00",
+  "started_at_utc": "2026-11-18T22:32:43+00:00",
+  "completed_at_utc": "2026-11-18T22:33:04+00:00",
   "status": "ready",
   "equity_ingestion": {
     "attempted_backfill": false,
     "downloaded_files": 1,
-    "downloaded_rows": 2761,
+    "downloaded_rows": 2757,
     "failed_requests": 0,
     "downloaded_dates": [
-      "2026-11-17"
+      "2026-11-18"
     ]
   },
-  "benchmark_rows_received": 281,
+  "benchmark_rows_received": 282,
   "benchmark_error": null,
   "etf_exclusion_source": "NSE official ETF security list",
   "etf_symbols_excluded_from_history": 347,
-  "history_rows_after_dedup": 603576,
-  "screened_candidates": 34,
+  "history_rows_after_dedup": 605974,
+  "screened_candidates": 23,
   "warnings": [
     "Excluded 347 ETF symbol(s) using NSE official ETF security list before screening.",
     "134 symbol(s) with a close move of at least 40% are excluded until adjusted history is reviewed: AASTHA (1 move(s)), ABANSENT (1 move(s)), ABINFRA (1 move(s)), AGIIL (1 move(s)), AHCL (1 move(s)), AIIL (1 move(s)), AJMERA (1 move(s)), ALLCARGO (1 move(s)), ANANDRATHI (1 move(s)), ANGELONE (1 move(s)), AQYLON (1 move(s)), ARROWGREEN (1 move(s)) ….",
