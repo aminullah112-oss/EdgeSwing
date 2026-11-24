@@ -94,6 +94,7 @@
     dh: { label: "VS 52W HIGH", html: r => pct(r.dh, 1), sort: r => r.dh, num: true },
     at: { label: "AVG TURNOVER", html: r => cr(r.at), sort: r => r.at, num: true },
     gap: { label: "GAP", html: r => pct(r.gap), sort: r => r.gap, num: true },
+    se: { label: "STOCKEDGE-STYLE", html: r => isNum(r.seb) ? `<span class="se-pill ${r.seb - r.ser >= 10 ? "se-strong" : r.seb > r.ser ? "se-pos" : r.seb < r.ser ? "se-neg" : ""}">${r.seb}▲ ${r.ser}▼</span>` : "—", sort: r => isNum(r.seb) ? r.seb - r.ser : null, num: true },
     cv: { label: "CONVICTION", html: r => isNum(r.cv) ? `<span class="conv-pill ${r.cv >= 6 ? "conv-high" : r.cv >= 5 ? "conv-mid" : "conv-low"}">${r.cv}/7</span>` : "—", sort: r => r.cv, num: true },
     vwd: { label: "VS VWAP", html: r => isNum(r.vw) ? pct((r.c / r.vw - 1) * 100, 1) : "—", sort: r => isNum(r.vw) ? r.c / r.vw : null, num: true },
     vw20d: { label: "VS VWAP20", html: r => isNum(r.vw20) ? pct((r.c / r.vw20 - 1) * 100, 1) : "—", sort: r => isNum(r.vw20) ? r.c / r.vw20 : null, num: true },
@@ -360,6 +361,7 @@
           </section>
         </div>
         ${convictionPanel(r)}
+        ${sePanel(r)}
         ${fundamentalsPanel(r)}
         <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Industry peers</h2><p>${r.cap ? `${esc(r.ind)} · most traded classified stocks` : "Peers are available for Nifty 100/Midcap/Smallcap/Microcap members only"}</p></div></div>
           <div id="mxPeers"></div></section>`;
@@ -471,6 +473,7 @@
           <section class="panel mx-panel"><div id="mxScanEvidence"></div><div class="panel-toolbar"><div><h2 id="mxScanTitle"></h2><p id="mxScanDesc"></p></div>
             <div class="heading-actions"><button class="button button-small button-secondary" id="mxScanDelete">Delete scan</button><button class="button button-small button-secondary" id="mxScanExport">↓ CSV</button></div></div>
             <div id="mxScanTable"></div></section></div>
+        ${seFinder()}
         ${evidenceTable()}
         <section class="panel mx-panel" id="mxBuilder"><div class="panel-toolbar"><div><h2>Build a custom scan</h2><p>All conditions must hold. Compare a field with a number or with another field (e.g. Close > SMA200). Saved in this browser.</p></div></div>
           <div id="mxConds"></div>
@@ -481,6 +484,7 @@
       $("#mxScanExport").addEventListener("click", () => exportTable($("#mxScanTable"), `scan-${S.scanId}-${S.snap.meta.latest_market_date}.csv`));
       $("#mxScanDelete").addEventListener("click", () => { S.custom = S.custom.filter(c => c.id !== S.scanId); store.set(CUSTOM_KEY, S.custom); S.scanId = SCANS[0].id; paintScanList(); runScan(); });
       setupBuilder();
+      wireSeFinder();
       paintScanList(); runScan();
     });
   }
@@ -534,6 +538,44 @@
       <tbody>${Object.values(ev.scans).map(st => `<tr><td>${esc(st.name)}</td>${years.map(y => { const t = st.by_year_on?.[y];
         return `<td class="num">${t && t.trades ? `<span class="${t.avg_r > 0 ? "up" : "down"}">${fmtR(t.avg_r)}</span> <small>${t.trades}</small>` : "—"}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>` : ""}
       <p class="small-note">${esc(ev.method)} Verdict: "supported" needs ≥30 signal days, positive average R, t ≥ 2 and a positive 10-day excess; "weak" is positive R with t ≥ 1. Prices are unadjusted, so windows around splits/bonuses are skipped. Past results, not a forecast.</p></section>`;
+  }
+  // ---- StockEdge-style scan catalogue (se_scans.py): same scan IDs as web.stockedge.com
+  const seCat = () => S.snap?.meta?.stockedge_scans?.catalogue || [];
+  const seLink = c => `https://web.stockedge.com/scan/${encodeURIComponent(c.slug)}/${c.id}`;
+  function sePanel(r) {
+    const cat = seCat();
+    if (!cat.length || !Array.isArray(r.se)) return "";
+    const byId = new Map(cat.map(c => [c.id, c])), groups = new Map();
+    r.se.map(id => byId.get(id)).filter(Boolean).forEach(c => { if (!groups.has(c.cat)) groups.set(c.cat, []); groups.get(c.cat).push(c); });
+    return `<section class="panel mx-panel"><div class="panel-toolbar"><div><h2>StockEdge-style scans: ${r.seb ?? 0} bullish, ${r.ser ?? 0} bearish</h2>
+      <p>${r.se.length} of ${cat.length} re-implemented StockEdge scans match the latest session. Links open StockEdge's page for the same scan ID to compare.</p></div>
+      <span class="se-pill ${r.seb - r.ser >= 10 ? "se-strong" : r.seb > r.ser ? "se-pos" : r.seb < r.ser ? "se-neg" : ""}">${r.seb ?? 0}▲ ${r.ser ?? 0}▼</span></div>
+      ${groups.size ? `<div class="mx-se-groups">${[...groups].map(([g, cs]) => `<div class="mx-se-group"><h4>${esc(g)}</h4>${cs.map(c =>
+        `<a class="${c.bias}" href="${seLink(c)}" target="_blank" rel="noopener" title="${esc(c.note || "")}">${esc(c.name)}</a>`).join("")}</div>`).join("")}</div>` : `<div class="empty-state">No StockEdge-style scan matches today.</div>`}
+      <p class="small-note">Counting scan hits measures how many single conditions agree, not expected return. Use alongside the conviction score and backtest evidence.</p></section>`;
+  }
+  function seFinder() {
+    const cat = seCat();
+    if (!cat.length) return "";
+    const groups = [...new Set(cat.map(c => c.cat))];
+    return `<section class="panel mx-panel"><div class="panel-toolbar"><div><h2>StockEdge-style scans (${cat.length})</h2>
+      <p>StockEdge's scan definitions re-implemented on our NSE data. The other ${510 - cat.length} of their 510 scans need delivery, F&O, shareholding or financial-results data we don't have.</p></div></div>
+      <div class="mx-se-finder"><select id="mxSeSelect"><option value="">Choose a scan…</option>${groups.map(g => `<optgroup label="${esc(g)}">${cat.filter(c => c.cat === g).map(c =>
+        `<option value="${c.id}">${c.bias === "bullish" ? "▲" : c.bias === "bearish" ? "▼" : "•"} ${esc(c.name)}</option>`).join("")}</optgroup>`).join("")}</select>
+      <a id="mxSeLink" class="text-button hidden" target="_blank" rel="noopener">Compare on StockEdge ↗</a><span id="mxSeNote" class="mx-muted"></span></div>
+      <div id="mxSeTable"></div></section>`;
+  }
+  function wireSeFinder() {
+    const sel = $("#mxSeSelect");
+    if (!sel) return;
+    sel.addEventListener("change", () => {
+      const c = seCat().find(x => x.id === +sel.value), host = $("#mxSeTable");
+      tableState.delete(host);
+      if (!c) { host.innerHTML = ""; $("#mxSeLink").classList.add("hidden"); $("#mxSeNote").textContent = ""; return; }
+      $("#mxSeLink").href = seLink(c); $("#mxSeLink").classList.remove("hidden"); $("#mxSeNote").textContent = c.note || "";
+      const rows = universe(S.rows, readUniverse("mxScan")).filter(r => (r.se || []).includes(c.id));
+      renderTable(host, rows, ["s", "c", "ch", "r1m", "se", "cv", "rv", "at"], { sort: "se", limit: 300, empty: "No stocks match this scan on the latest session." });
+    });
   }
   function convictionPanel(r) {
     const factors = S.snap?.meta?.conviction?.factors || [];

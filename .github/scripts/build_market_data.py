@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import update_nse_data as core  # noqa: E402  (shared loaders, HTTP helper, CA rule)
 import fundamentals as fund  # noqa: E402
 import conviction as conv  # noqa: E402
+import se_scans as se  # noqa: E402
 
 ROOT = core.ROOT
 DEFAULT_OUT = ROOT / "data" / "market"
@@ -66,7 +67,7 @@ SNAPSHOT_COLUMNS = [
     "s", "n", "ind", "cap", "n50", "d", "o", "h", "l", "c", "ch", "v", "t", "at", "rv",
     "r1w", "r1m", "r3m", "r6m", "r1y", "h52", "l52", "dh", "dl",
     "s20", "s50", "s200", "e20", "rsi", "atrp", "macd", "macds", "macdh", "gap",
-    "ev", "ca", "stale", "key", "len", "vw", "vw20", "cv", "cvf", "hc", "adx", "rs55",
+    "ev", "ca", "stale", "key", "len", "vw", "vw20", "cv", "cvf", "hc", "adx", "rs55", "se", "seb", "ser",
 ] + FUND_COLUMNS
 
 
@@ -397,6 +398,27 @@ def research_evidence(history: list[dict[str, Any]]) -> dict[str, Any] | None:
     return out
 
 
+def add_stockedge_scans(rows: list[list[Any]], all_series: dict[str, dict], bench_close: dict[str, float]) -> int:
+    """Fill se (hit IDs), seb (bullish count) and ser (bearish count) for current, non-stale stocks."""
+    col = {k: SNAPSHOT_COLUMNS.index(k) for k in ("s", "stale", "ind", "pe", "pb", "dy", "roe", "roce", "de", "se", "seb", "ser")}
+    ind_pe: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        if r[col["pe"]] is not None and r[col["pe"]] > 0:
+            ind_pe[r[col["ind"]]].append(r[col["pe"]])
+    medians = {k: sorted(v)[len(v) // 2] for k, v in ind_pe.items() if len(v) >= 3}
+    n = 0
+    for r in rows:
+        if r[col["stale"]]:
+            continue
+        fund = {k: r[col[k]] for k in ("pe", "pb", "dy", "roe", "roce", "de")}
+        fund = {**fund, "ind_pe": medians.get(r[col["ind"]])} if any(v is not None for v in fund.values()) else None
+        hits = se.evaluate(all_series[r[col["s"]]], bench_close, fund)
+        rt = se.rating(hits)
+        r[col["se"]], r[col["seb"]], r[col["ser"]] = hits, rt["bull"], rt["bear"]
+        n += 1
+    return n
+
+
 def regime_today(bench_close: dict[str, float]) -> dict[str, Any] | None:
     """Market regime gate on the latest benchmark date: NIFTY 50 vs its 50-session SMA."""
     dates = sorted(bench_close)
@@ -454,6 +476,7 @@ def snapshot_row(symbol: str, s: dict[str, list[float]], info: dict[str, Any], j
         "stale": 1 if dates[i] != latest_date else 0, "key": key, "len": len(c),
         "vw": rnd(s["vw"][i]), "vw20": rnd(s["vw20"][i]),
         **conviction_today(s, i, bool(jumps), dates[i] == latest_date),
+        "se": [], "seb": None, "ser": None,  # filled by add_stockedge_scans()
         **{k: None for k in FUND_COLUMNS}, **(fvals or {}),
     }
     return [row[col] for col in SNAPSHOT_COLUMNS]
@@ -561,6 +584,7 @@ def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]]
                      **{k: rnd((bc[i] / bc[i - n] - 1) * 100) if i >= n else None for k, n in RETURN_WINDOWS.items()},
                      "s50": rnd(bench["s50"][i]), "s200": rnd(bench["s200"][i]), "rsi": rnd(bench["rsi"][i], 1)}
     classified = sum(1 for r in rows if r[SNAPSHOT_COLUMNS.index("cap")])
+    se_count = add_stockedge_scans(rows, all_series, bench_close)
     fa_idx, pe_idx, mc_idx = (SNAPSHOT_COLUMNS.index(k) for k in ("fa", "pe", "mcap"))
     fund_dates = sorted({r[fa_idx] for r in rows if r[fa_idx]})
     if fund_blocked:
@@ -576,6 +600,9 @@ def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]]
     if evidence is None:
         evidence = conv.backtest(all_series, set(jump_flags), equity_dates, bench_close) if bench_close else None
     meta = {
+        "stockedge_scans": {"catalogue": se.catalogue(), "evaluated_stocks": se_count,
+                            "source": "web.stockedge.com/sitemap/sitemap_scan.xml (510 scans); definitions re-implemented on NSE "
+                                      "bhavcopy data with standard parameters; thresholds are ours where StockEdge's are unpublished"},
         "conviction": {"regime": regime_today(bench_close),
                        "factors": [{"id": k, "label": v} for k, v in conv.FACTORS],
                        "scans": [{k: sc[k] for k in ("id", "name", "desc")} for sc in conv.HC_SCANS],
@@ -634,12 +661,15 @@ def annotate_screen(snapshot_path: Path, screen_path: Path) -> int:
     snap = json.loads(snapshot_path.read_text(encoding="utf-8"))
     cols = snap["columns"]
     by = {r[0]: dict(zip(cols, r)) for r in snap["rows"]}
+    se_names = {c["id"]: c for c in snap["meta"].get("stockedge_scans", {}).get("catalogue", [])}
     screen = json.loads(screen_path.read_text(encoding="utf-8"))
     n = 0
     for cand in screen.get("candidates", []):
         row = by.get(cand.get("symbol"))
         if row and row["d"] == cand.get("date"):
             cand["conviction"], cand["conviction_factors"], cand["hc_scans"] = row["cv"], row["cvf"], row["hc"]
+            cand["se_bull"], cand["se_bear"] = row.get("seb"), row.get("ser")
+            cand["se_hits"] = [[h, se_names[h]["name"], se_names[h]["bias"]] for h in row.get("se") or [] if h in se_names]
             n += 1
     cmeta = snap["meta"]["conviction"]
     screen["conviction_factors"] = cmeta["factors"]
