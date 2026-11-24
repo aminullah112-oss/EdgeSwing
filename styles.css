@@ -132,3 +132,8 @@
 @media(max-width:540px){.mx-stat-grid{grid-template-columns:repeat(2,1fr)}.mx-kv{grid-template-columns:1fr}.mx-cond{grid-template-columns:1fr 1fr}.mx-suggest{min-width:0}.mx-stock-head h1{font-size:24px}.mx-panel{padding:14px}}
 .mx-fund-grid{grid-template-columns:repeat(4,1fr)}
 @media(max-width:850px){.mx-fund-grid{grid-template-columns:repeat(2,1fr)}}
+.vwap-line{display:flex;flex-wrap:wrap;gap:6px;margin:-4px 0 12px}
+.vwap-chip{font-size:10px;padding:4px 7px;border-radius:6px;border:1px solid #2a3c5a;background:#15213a;color:#c8d6ee;font-variant-numeric:tabular-nums}
+.vwap-chip.above{color:#85e6c4;background:#123329;border-color:#1f5544}
+.vwap-chip.below{color:#ffb3bc;background:#3a1a22;border-color:#5a2a35}
+.vwap-chip.neutral{color:var(--muted)}

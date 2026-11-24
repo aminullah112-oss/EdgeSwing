@@ -65,7 +65,7 @@ SNAPSHOT_COLUMNS = [
     "s", "n", "ind", "cap", "n50", "d", "o", "h", "l", "c", "ch", "v", "t", "at", "rv",
     "r1w", "r1m", "r3m", "r6m", "r1y", "h52", "l52", "dh", "dl",
     "s20", "s50", "s200", "e20", "rsi", "atrp", "macd", "macds", "macdh", "gap",
-    "ev", "ca", "stale", "key", "len",
+    "ev", "ca", "stale", "key", "len", "vw", "vw20",
 ] + FUND_COLUMNS
 
 
@@ -272,8 +272,16 @@ def series(rows: list[dict[str, Any]]) -> dict[str, list[float]]:
           for i in range(len(c))]
     macd = [a - b for a, b in zip(ema(c, 12), ema(c, 26))]
     signal = ema(macd, 9)
+    val = [r.get("value") or None for r in rows]
+    vw20 = [math.nan] * len(c)
+    for i in range(core.VWAP_SESSIONS - 1, len(c)):
+        window = range(i - core.VWAP_SESSIONS + 1, i + 1)
+        if all(val[j] for j in window):
+            vol = sum(v[j] for j in window)
+            vw20[i] = sum(val[j] for j in window) / vol if vol > 0 else math.nan
     return {
-        "date": [r["date"] for r in rows], "o": o, "h": h, "l": l, "c": c, "v": v,
+        "date": [r["date"] for r in rows], "o": o, "h": h, "l": l, "c": c, "v": v, "val": val,
+        "vw": [x / y if x and y > 0 else math.nan for x, y in zip(val, v)], "vw20": vw20,
         "s20": rolling_mean(c, 20), "s50": rolling_mean(c, 50), "s200": rolling_mean(c, 200),
         "e20": ema(c, 20), "rsi": wilder_rsi(c), "atr": rolling_mean(tr, 14),
         "avgv": rolling_mean(v, 20), "avgt": rolling_mean([a * b for a, b in zip(c, v)], 20),
@@ -320,6 +328,10 @@ def events_for(s: dict[str, list[float]]) -> list[str]:
         ev.append("e20_up")
     if crossed(c, s["e20"], i, False):
         ev.append("e20_dn")
+    if crossed(c, s["vw20"], i, True):
+        ev.append("vw20_up")
+    if crossed(c, s["vw20"], i, False):
+        ev.append("vw20_dn")
     if finite(s["avgv"][i]) and s["avgv"][i] > 0 and v[i] / s["avgv"][i] >= 3:
         ev.append("vol3")
     if i >= 6 and (h[i] - l[i]) <= min(h[j] - l[j] for j in range(i - 6, i)):
@@ -377,6 +389,7 @@ def snapshot_row(symbol: str, s: dict[str, list[float]], info: dict[str, Any], j
         "gap": rnd((s["o"][i] / prev - 1) * 100) if finite(prev) and prev > 0 else None,
         "ev": events_for(s), "ca": jumps[-1]["date"] if jumps else None,
         "stale": 1 if dates[i] != latest_date else 0, "key": key, "len": len(c),
+        "vw": rnd(s["vw"][i]), "vw20": rnd(s["vw20"][i]),
         **{k: None for k in FUND_COLUMNS}, **(fvals or {}),
     }
     return [row[col] for col in SNAPSHOT_COLUMNS]
@@ -460,8 +473,8 @@ def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]]
         if blocked_by:
             fund_blocked.append(f"{symbol} ({blocked_by})")
         rows.append(snapshot_row(symbol, s, info, jumps, latest, key, fvals))
-        bars = [[d, rnd(o), rnd(h), rnd(l), rnd(c), int(v)]
-                for d, o, h, l, c, v in zip(s["date"], s["o"], s["h"], s["l"], s["c"], s["v"])]
+        bars = [[d, rnd(o), rnd(h), rnd(l), rnd(c), int(v), int(val) if val else None]
+                for d, o, h, l, c, v, val in zip(s["date"], s["o"], s["h"], s["l"], s["c"], s["v"], s["val"])]
         stock_bytes += write_compact(stocks_dir / f"{key}.json", {"s": symbol, "bars": bars})
 
     bench_rows = by_symbol.get(BENCHMARK, [])

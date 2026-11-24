@@ -243,6 +243,12 @@
     $("#tableFootnote").textContent=state.autoMode?`Automated NSE EOD screen · ${state.autoMeta?.latest_market_date||state.lastDate} · technical rules only`:state.demo?"Synthetic demo data · not a recommendation":"Uploaded CSV · technical rules only";
     renderOverviewTracker();drawEquityChart();
   }
+  function vwapLine(r){
+    const c=Number(r.close),v=Number(r.vwap),v20=Number(r.vwap20);
+    if(!(v>0)&&!(v20>0))return `<div class="vwap-line"><span class="vwap-chip neutral">VWAP unavailable</span></div>`;
+    const chip=(label,ref)=>{if(!(ref>0))return `<span class="vwap-chip neutral">${label} —</span>`;const d=(c/ref-1)*100;return `<span class="vwap-chip ${d>=0?"above":"below"}">${d>=0?"Above":"Below"} ${label} ${money(ref)} (${d>=0?"+":""}${fmtNum(d,1)}%)</span>`;};
+    return `<div class="vwap-line">${chip("VWAP",v)}${chip("VWAP20",v20)}</div>`;
+  }
   function proposalCard(r){
     const p=buildTradePlan(r),unavailable=!p.quantityAvailable;
     const score=Math.max(0,Math.min(100,p.score));
@@ -250,6 +256,7 @@
       <div class="proposal-card-top"><div class="proposal-identity"><span class="symbol-avatar">${escapeHtml(p.symbol.slice(0,2))}</span><div><div class="proposal-symbol">${escapeHtml(p.symbol)}</div><div class="proposal-subtitle">${escapeHtml(p.signalDate)} · ${escapeHtml(setupLabel(p.strategy))}</div></div></div><div class="score-ring ${tierClass(score)}"><strong>${score}</strong><small>/100</small></div></div>
       <div class="proposal-card-badges"><span class="setup-pill ${setupClass(p.strategy)}">${escapeHtml(setupLabel(p.strategy))}</span><span class="tier-pill ${tierClass(score)}">${escapeHtml(p.tier)} setup quality</span><span class="holding-pill">2–${p.maxHoldSessions} sessions</span></div>
       <div class="proposal-reason">${escapeHtml(proposalReason({...r,relVol:p.relVol,rsi:p.rsi}))}</div>
+      ${vwapLine(r)}
       <div class="proposal-price-grid"><div><span>ENTRY TRIGGER</span><strong>${money(p.entryTrigger)}</strong><small>Next-session stop-entry</small></div><div class="stop-rail"><span>STOP LOSS</span><strong>${money(p.stop)}</strong><small>${fmtNum((p.entryTrigger-p.stop)/p.entryTrigger*100,2)}% below entry</small></div><div class="target-rail"><span>TAKE PROFIT 1</span><strong>${money(p.target1)}</strong><small>1R reference</small></div><div class="target-rail target-rail-strong"><span>TAKE PROFIT 2</span><strong>${money(p.target2)}</strong><small>2R · proposal target</small></div></div>
       <div class="proposal-metrics"><div><span>SUGGESTED QTY</span><strong>${p.qty.toLocaleString("en-IN")}</strong></div><div><span>POSITION VALUE</span><strong>${fmtINR(p.positionValue)}</strong></div><div><span>PLANNED RISK</span><strong>${fmtINR(p.plannedRisk)}</strong></div><div><span>EST. ROUND-TRIP COST</span><strong>${fmtINR(p.estimatedCost,2)}</strong></div></div>
       <div class="proposal-card-bottom"><div class="proposal-validity"><span class="pulse-dot"></span><span>Entry valid for ${p.validForSessions} sessions · max hold ${p.maxHoldSessions}</span></div><button class="button button-primary proposal-button" data-propose-symbol="${escapeHtml(p.symbol)}" ${unavailable?"disabled":""}>${unavailable?"Risk capacity unavailable":"Create proposal & track"}</button></div>
@@ -257,9 +264,11 @@
     </article>`;
   }
   function renderScanner(){
-    const strategy=$("#strategyFilter").value,min=Number($("#minScore").value),sort=$("#sortSignals").value;
+    const strategy=$("#strategyFilter").value,min=Number($("#minScore").value),sort=$("#sortSignals").value,vwapMode=$("#vwapFilter")?.value||"all";
     const latestBySymbol=new Map();for(const r of state.candidates){const old=latestBySymbol.get(r.symbol);if(!old||r.date>old.date)latestBySymbol.set(r.symbol,r);}
-    let rows=[...latestBySymbol.values()].filter(r=>(strategy==="all"||r.strategy===strategy)&&(Number(r.score)||0)>=min);
+    // VWAP confirmation is opt-in: a candidate without traded-value data fails a VWAP filter rather than passing silently.
+    const vwapOk=r=>{const c=Number(r.close),v=Number(r.vwap),v20=Number(r.vwap20);if(vwapMode==="all")return true;if(!(v>0)||c<=v)return false;return vwapMode==="day"||(v20>0&&c>v20);};
+    let rows=[...latestBySymbol.values()].filter(r=>(strategy==="all"||r.strategy===strategy)&&(Number(r.score)||0)>=min&&vwapOk(r));
     rows.sort((a,b)=>sort==="volume"?(Number(b.relVol??b.rel_vol)||0)-(Number(a.relVol??a.rel_vol)||0):sort==="rsi"?(Number(b.rsi)||0)-(Number(a.rsi)||0):sort==="symbol"?a.symbol.localeCompare(b.symbol):(Number(b.score)||0)-(Number(a.score)||0));
     $("#scanMatches").textContent=rows.length;$("#scanAsOf").textContent=state.lastDate;
     const grid=$("#proposalGrid");if(grid)grid.innerHTML=rows.map(proposalCard).join("");
@@ -597,7 +606,7 @@
     $("#dismissNotice").addEventListener("click",()=>$(".notice-warning").classList.add("hidden"));
     $("#overviewTabs").addEventListener("click",e=>{const b=e.target.closest("[data-filter]");if(!b)return;$$(".tab",$("#overviewTabs")).forEach(x=>x.classList.toggle("active",x===b));state.strategy=b.dataset.filter;renderOverview();});
     $("#applyFilters").addEventListener("click",renderScanner);
-    ["strategyFilter","minScore","sortSignals"].forEach(id=>$("#"+id).addEventListener("change",renderScanner));
+    ["strategyFilter","minScore","sortSignals","vwapFilter"].forEach(id=>$("#"+id)?.addEventListener("change",renderScanner));
     $("#exportSignals").addEventListener("click",()=>{const latest=new Map();state.candidates.forEach(r=>{if(!latest.has(r.symbol)||latest.get(r.symbol).date<r.date)latest.set(r.symbol,r);});const rows=[...latest.values()].map(r=>{const p=buildTradePlan(r);return {symbol:r.symbol,date:r.date,strategy:r.strategy,signal_close:r.close,quality_tier:p.tier,setup_score:r.score,entry_trigger:p.entryTrigger,stop_loss:p.stop,take_profit_1:p.target1,take_profit_2:p.target2,holding_sessions:`2-${p.maxHoldSessions}`,suggested_quantity:p.qty,position_value:p.positionValue,risk_budget:p.riskBudget,estimated_cost:p.estimatedCost,source:state.source};});download("edge-nse-proposals.csv",csvFor(rows));});
     const ingestCSV=async fileListLike=>{
       const files=Array.from(fileListLike||[]).filter(Boolean);

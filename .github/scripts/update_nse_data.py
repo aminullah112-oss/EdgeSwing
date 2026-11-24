@@ -30,7 +30,9 @@ DATA_DIR = ROOT / "data"
 HISTORY_PATH = DATA_DIR / "history.csv"
 SCREEN_PATH = DATA_DIR / "latest_screen.json"
 RUN_PATH = DATA_DIR / "last_run.json"
-HISTORY_COLUMNS = ("date", "symbol", "open", "high", "low", "close", "volume")
+HISTORY_COLUMNS = ("date", "symbol", "open", "high", "low", "close", "volume", "value")
+VWAP_SESSIONS = 20          # rolling VWAP window
+VWAP_REFRESH_SESSIONS = 25  # recent sessions re-fetched once if stored without traded value
 NSE_REPORTS = "https://www.nseindia.com/all-reports"
 NSE_ARCHIVE_TEMPLATE = "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{date}_F_0000.csv.zip"
 NSE_INDEX_API = "https://www.nseindia.com/api/historical/indicesHistory"
@@ -89,6 +91,14 @@ def valid_bar(bar: dict[str, Any]) -> bool:
             min(o, h, l, c) > 0 and v >= 0 and h >= max(o, c, l) and l <= min(o, c, h))
 
 
+def checked_value(value: float | None, bar: dict[str, Any]) -> float | None:
+    """Accept traded value only if the implied VWAP lies within the day's low-high range (±0.5%)."""
+    if value is None or value <= 0 or not bar.get("volume"):
+        return None
+    vwap = value / bar["volume"]
+    return value if bar["low"] * 0.995 <= vwap <= bar["high"] * 1.005 else None
+
+
 def read_bhavcopy_zip(content: bytes, source_date: dt.date) -> tuple[list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
     try:
@@ -114,7 +124,10 @@ def read_bhavcopy_zip(content: bytes, source_date: dt.date) -> tuple[list[dict[s
         "low": ("lwpric", "low", "lowprice"),
         "close": ("clspric", "close", "closeprice"),
         "volume": ("ttltradgvol", "tottrdqty", "volume", "totaltradedquantity", "tradedqty"),
+        # Optional: total traded value in rupees, used for VWAP (value / volume).
+        "value": ("ttltrfval", "tottrdval", "totaltradedvalue", "tradedvalue", "turnover"),
     }
+    invalid_value = 0
     # Normalise keys for stable alias matching.
     normalized_rows = []
     for original in reader:
@@ -145,6 +158,9 @@ def read_bhavcopy_zip(content: bytes, source_date: dt.date) -> tuple[list[dict[s
         }
         if not valid_bar(bar):
             continue
+        bar["value"] = checked_value(num(row_value(row, required_aliases["value"])), bar)
+        if bar["value"] is None and row_value(row, required_aliases["value"]) not in (None, ""):
+            invalid_value += 1
         key = (date, symbol)
         if key in seen:
             duplicates += 1
@@ -153,6 +169,9 @@ def read_bhavcopy_zip(content: bytes, source_date: dt.date) -> tuple[list[dict[s
         bars.append(bar)
     if duplicates:
         warnings.append(f"{duplicates} duplicate EQ rows skipped in the {source_date.isoformat()} bhavcopy.")
+    if invalid_value:
+        warnings.append(f"{invalid_value} traded-value cell(s) in the {source_date.isoformat()} bhavcopy implied a VWAP "
+                        "outside the day's low-high range and were discarded.")
     if not bars:
         raise ValueError("No valid EQ-series OHLCV rows found")
     # The filename date can be the intended report date; record actual bar dates from source.
@@ -334,6 +353,7 @@ def load_history() -> list[dict[str, Any]]:
             for key in ("open", "high", "low", "close", "volume"):
                 bar[key] = num(row.get(key))
             if valid_bar(bar):
+                bar["value"] = checked_value(num(row.get("value")), bar)  # optional; absent in older history
                 rows.append(bar)
     return rows
 
@@ -355,6 +375,7 @@ def write_history(rows: list[dict[str, Any]]) -> None:
                 "open": f"{row['open']:.2f}", "high": f"{row['high']:.2f}",
                 "low": f"{row['low']:.2f}", "close": f"{row['close']:.2f}",
                 "volume": f"{row['volume']:.0f}",
+                "value": f"{row['value']:.0f}" if row.get("value") else "",
             })
 
 
@@ -388,6 +409,18 @@ def classify_status(trading_sessions: int, latest_market_date: str | None, today
         return "warming_up"
     age_days = (today - dt.date.fromisoformat(latest_market_date)).days
     return "ready" if 0 <= age_days <= 3 else "stale"
+
+
+def vwap_refresh_dates(rows: list[dict[str, Any]], skip: set[str]) -> list[str]:
+    """Recent equity sessions stored without traded value (under half the rows carry it)."""
+    totals: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    for r in rows:
+        if not r["symbol"].startswith("NIFTY"):
+            t = totals[r["date"]]
+            t[0] += 1
+            t[1] += 1 if r.get("value") else 0
+    recent = sorted(totals)[-VWAP_REFRESH_SESSIONS:]
+    return [d for d in recent if d not in skip and totals[d][1] * 2 < totals[d][0]]
 
 
 def acquire_equities(history: list[dict[str, Any]], force_backfill: bool) -> tuple[list[dict[str, Any]], dict[str, Any], list[str]]:
@@ -459,8 +492,26 @@ def acquire_equities(history: list[dict[str, Any]], force_backfill: bool) -> tup
         warnings.append(f"{len(failed)} NSE archive request(s) failed. Last failure: {failed[-1]}")
     if not succeeded_sessions:
         warnings.append("No new NSE CM-UDiFF archive was fetched in this run; existing stored history was retained.")
+    vwap_refreshed: list[str] = []
+    if not should_backfill:
+        for iso in vwap_refresh_dates(merge_rows(history, downloaded), set(succeeded_sessions)):
+            try:
+                result = fetch_daily_bhavcopy(dt.date.fromisoformat(iso))
+            except Exception as exc:
+                warnings.append(f"VWAP refresh for {iso} failed: {exc}")
+                continue
+            if not result:
+                continue
+            bars, _ = result
+            if not any(b.get("value") for b in bars):
+                warnings.append("NSE bhavcopy carried no usable traded value; VWAP refresh stopped.")
+                break
+            downloaded.extend(bars)
+            vwap_refreshed.append(iso)
+            time.sleep(0.1)
     merged = merge_rows(history, downloaded)
-    run = {"attempted_backfill": should_backfill, "downloaded_files": len(set(succeeded_sessions)),
+    run = {"attempted_backfill": should_backfill, "vwap_refreshed_dates": vwap_refreshed,
+           "downloaded_files": len(set(succeeded_sessions)),
            "downloaded_rows": len(downloaded), "failed_requests": len(failed),
            "downloaded_dates": sorted(set(succeeded_sessions))}
     return merged, run, warnings
@@ -577,6 +628,17 @@ def indicator_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for i in range(n):
         prev = closes[i - 1] if i else closes[i]
         tr.append(max(highs[i] - lows[i], abs(highs[i] - prev), abs(lows[i] - prev)))
+    values = [r.get("value") for r in rows]
+    def rolling_vwap(i: int) -> float:
+        """Sum of traded value / sum of volume over the last VWAP_SESSIONS sessions; NaN if any value is missing."""
+        if i + 1 < VWAP_SESSIONS:
+            return math.nan
+        window = range(i - VWAP_SESSIONS + 1, i + 1)
+        if any(not values[j] for j in window):
+            return math.nan
+        vol = sum(vols[j] for j in window)
+        return sum(values[j] for j in window) / vol if vol > 0 else math.nan
+    vwap20 = [rolling_vwap(i) for i in range(n)]
     out = []
     for i, row in enumerate(rows):
         def sma(a: list[float], length: int) -> float:
@@ -593,6 +655,9 @@ def indicator_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "atr": mean(tr[i - 13:i + 1]) if i >= 13 else math.nan,
             "prev_close": closes[i - 1] if i > 0 else math.nan,
             "prev_ema20": ema20[i - 1] if i > 0 else math.nan,
+            "vwap": values[i] / vols[i] if values[i] and vols[i] > 0 else math.nan,
+            "vwap20": vwap20[i],
+            "prev_vwap20": vwap20[i - 1] if i > 0 else math.nan,
         })
     return out
 
@@ -686,6 +751,8 @@ def screen(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, 
             "stop": round(current["close"] - 2 * atr, 4), "atr14_sma": round(atr, 4),
             "avg_turnover_20d": round(current["avg_turn"], 2),
             "return_60d": round(stock_mom * 100, 2) if math.isfinite(stock_mom) else None,
+            "vwap": round(current["vwap"], 2) if math.isfinite(current["vwap"]) else None,
+            "vwap20": round(current["vwap20"], 2) if math.isfinite(current["vwap20"]) else None,
             "benchmark_return_60d": round(bm_mom * 100, 2) if math.isfinite(bm_mom) else None,
         })
     candidates.sort(key=lambda r: (-r["score"], r["symbol"]))

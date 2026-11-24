@@ -31,14 +31,14 @@
     h52: "New 52-week high", l52: "New 52-week low", b20: "Closed above 20-session high", d20: "Closed below 20-session low",
     gx: "Golden cross (SMA50 > SMA200, last 5 sessions)", dx: "Death cross (SMA50 < SMA200, last 5 sessions)",
     macd_up: "MACD crossed above signal", macd_dn: "MACD crossed below signal", e20_up: "Closed back above EMA20",
-    e20_dn: "Closed below EMA20", vol3: "Volume ≥ 3× 20-session average", nr7: "NR7: narrowest range in 7 sessions",
+    e20_dn: "Closed below EMA20", vw20_up: "Closed back above 20-session VWAP", vw20_dn: "Closed below 20-session VWAP", vol3: "Volume ≥ 3× 20-session average", nr7: "NR7: narrowest range in 7 sessions",
     inside: "Inside day", bull_engulf: "Bullish engulfing candle", bear_engulf: "Bearish engulfing candle",
     gap_up: "Gap up ≥ 2% above prior high", gap_dn: "Gap down ≥ 2% below prior low",
   };
 
   const S = { snap: null, rows: [], bySym: new Map(), breadth: [], bench: null, loading: null, error: null,
     watch: new Set(store.get(WATCH_KEY, [])), custom: store.get(CUSTOM_KEY, []),
-    stock: null, bars: new Map(), range: 250, overlays: { s20: true, s50: true, s200: true },
+    stock: null, bars: new Map(), range: 250, overlays: { s20: true, s50: true, s200: true, vw20: true },
     moversTab: "gainers", scanId: "h52", sector: null };
 
   // ------------------------------------------------------------------ data
@@ -94,6 +94,8 @@
     dh: { label: "VS 52W HIGH", html: r => pct(r.dh, 1), sort: r => r.dh, num: true },
     at: { label: "AVG TURNOVER", html: r => cr(r.at), sort: r => r.at, num: true },
     gap: { label: "GAP", html: r => pct(r.gap), sort: r => r.gap, num: true },
+    vwd: { label: "VS VWAP", html: r => isNum(r.vw) ? pct((r.c / r.vw - 1) * 100, 1) : "—", sort: r => isNum(r.vw) ? r.c / r.vw : null, num: true },
+    vw20d: { label: "VS VWAP20", html: r => isNum(r.vw20) ? pct((r.c / r.vw20 - 1) * 100, 1) : "—", sort: r => isNum(r.vw20) ? r.c / r.vw20 : null, num: true },
     mcap: { label: "MKT CAP", html: r => cr(r.mcap), sort: r => r.mcap, num: true },
     pe: { label: "P/E", html: r => isNum(r.pe) ? nf(r.pe, 1) : (isNum(r.eps) && r.eps <= 0 ? `<span class="down">Loss</span>` : "—"), sort: r => r.pe, num: true },
     pb: { label: "P/B", html: r => nf(r.pb, 2), sort: r => r.pb, num: true },
@@ -145,12 +147,21 @@
     const ctx = canvas.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     return { ctx, w, h };
   }
+  // Rolling VWAP = sum(traded value) / sum(volume); null wherever a bar in the window lacks traded value.
+  function vwapArr(bars, n) {
+    return bars.map((_, i) => {
+      if (i < n - 1) return null;
+      let val = 0, vol = 0;
+      for (let j = i - n + 1; j <= i; j++) { if (!bars[j].val) return null; val += bars[j].val; vol += bars[j].v; }
+      return vol > 0 ? val / vol : null;
+    });
+  }
   function smaArr(vals, n) { const out = Array(vals.length).fill(null); let t = 0; vals.forEach((v, i) => { t += v; if (i >= n) t -= vals[i - n]; if (i >= n - 1) out[i] = t / n; }); return out; }
 
   function drawCandles(canvas, allBars, readout) {
-    const full = allBars.map(b => ({ d: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
+    const full = allBars.map(b => ({ d: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5], val: b[6] }));
     const closes = full.map(b => b.c);
-    const ma = { s20: smaArr(closes, 20), s50: smaArr(closes, 50), s200: smaArr(closes, 200) };
+    const ma = { s20: smaArr(closes, 20), s50: smaArr(closes, 50), s200: smaArr(closes, 200), vw20: vwapArr(full, 20) };
     const start = Math.max(0, full.length - S.range);
     const bars = full.slice(start);
     const { ctx, w, h } = setupCanvas(canvas);
@@ -175,7 +186,8 @@
         ctx.strokeStyle = color; ctx.beginPath(); ctx.moveTo(x(i), y(b.h)); ctx.lineTo(x(i), y(b.l)); ctx.stroke();
         const top = y(Math.max(b.o, b.c)), bot = y(Math.min(b.o, b.c)); ctx.fillRect(x(i) - bw / 2, top, bw, Math.max(1, bot - top));
       });
-      const maColors = { s20: css("--amber") || "#f5bd68", s50: css("--blue") || "#7aa7ff", s200: css("--violet") || "#b7a2ff" };
+      const maColors = { s20: css("--amber") || "#f5bd68", s50: css("--blue") || "#7aa7ff", s200: css("--violet") || "#b7a2ff", vw20: "#5eead4" };
+      const maLabels = { s20: "SMA20", s50: "SMA50", s200: "SMA200", vw20: "VWAP20" };
       Object.keys(ma).forEach(k => { if (!S.overlays[k]) return; ctx.strokeStyle = maColors[k]; ctx.lineWidth = 1.4; ctx.beginPath(); let on = false;
         bars.forEach((_, i) => { const v = ma[k][start + i]; if (v == null) { on = false; return; } on ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v)); on = true; }); ctx.stroke(); ctx.lineWidth = 1; });
       const i = hover ?? n - 1, b = bars[i];
@@ -183,7 +195,7 @@
       if (b && readout) {
         const prev = full[start + i - 1]?.c, chg = prev ? (b.c / prev - 1) * 100 : null;
         readout.innerHTML = `<b>${b.d}</b> O ${nf(b.o)} H ${nf(b.h)} L ${nf(b.l)} C ${nf(b.c)} ${pct(chg)} · Vol ${b.v.toLocaleString("en-IN")}` +
-          Object.keys(ma).filter(k => S.overlays[k] && ma[k][start + i] != null).map(k => ` · <i style="color:${maColors[k]}">${k.toUpperCase().replace("S", "SMA")} ${nf(ma[k][start + i])}</i>`).join("");
+          Object.keys(ma).filter(k => S.overlays[k] && ma[k][start + i] != null).map(k => ` · <i style="color:${maColors[k]}">${maLabels[k]} ${nf(ma[k][start + i])}</i>`).join("");
       }
     };
     draw(null);
@@ -319,7 +331,7 @@
         </section>
         <section class="panel mx-panel">
           <div class="panel-toolbar"><div class="tab-group" id="mxRange">${[[63, "3M"], [126, "6M"], [250, "1Y"], [9999, "All"]].map(([n, l]) => `<button class="tab ${S.range === n ? "active" : ""}" data-n="${n}">${l}</button>`).join("")}</div>
-            <div class="tab-group" id="mxOverlays">${[["s20", "SMA20"], ["s50", "SMA50"], ["s200", "SMA200"]].map(([k, l]) => `<button class="tab ${S.overlays[k] ? "active" : ""}" data-k="${k}">${l}</button>`).join("")}</div></div>
+            <div class="tab-group" id="mxOverlays">${[["s20", "SMA20"], ["s50", "SMA50"], ["s200", "SMA200"], ["vw20", "VWAP20"]].map(([k, l]) => `<button class="tab ${S.overlays[k] ? "active" : ""}" data-k="${k}">${l}</button>`).join("")}</div></div>
           <div class="mx-readout" id="mxReadout">Loading chart…</div>
           <div class="mx-chart-wrap"><canvas id="mxCandles" aria-label="${esc(r.s)} daily candlestick chart" role="img"></canvas></div>
         </section>
@@ -336,6 +348,8 @@
               <div><span>RSI (14, Wilder)</span><strong>${nf(r.rsi, 1)}</strong><small>${rsiZone}</small></div>
               <div><span>MACD (12, 26, 9)</span><strong>${nf(r.macd, 2)}</strong><small>Histogram ${isNum(r.macdh) ? (r.macdh >= 0 ? "positive" : "negative") + " " + nf(r.macdh, 2) : "—"}</small></div>
               ${["s20", "s50", "s200"].map(k => `<div><span>${k.replace("s", "SMA ")}</span><strong>₹${nf(r[k])}</strong><small>Close ${isNum(r[k]) ? pct((r.c / r[k] - 1) * 100, 1) + " vs average" : "—"}</small></div>`).join("")}
+              <div><span>VWAP (today)</span><strong>₹${nf(r.vw)}</strong><small>${isNum(r.vw) ? `Close ${pct((r.c / r.vw - 1) * 100, 1)} vs session VWAP` : "Traded value unavailable"}</small></div>
+              <div><span>VWAP (20 sessions)</span><strong>₹${nf(r.vw20)}</strong><small>${isNum(r.vw20) ? `Close ${pct((r.c / r.vw20 - 1) * 100, 1)} vs 20-session VWAP` : "Needs 20 sessions of traded value"}</small></div>
               <div><span>EMA 20</span><strong>₹${nf(r.e20)}</strong><small>Close ${isNum(r.e20) ? pct((r.c / r.e20 - 1) * 100, 1) : "—"}</small></div>
               <div><span>ATR 14</span><strong>₹${nf(atr)}</strong><small>${nf(r.atrp)}% of price · 2×ATR stop ₹${nf(atr ? r.c - 2 * atr : null)}</small></div>
               <div><span>Volume</span><strong>${r.v.toLocaleString("en-IN")}</strong><small>${isNum(r.rv) ? nf(r.rv) + "× 20-session avg" : "—"}</small></div>
@@ -410,6 +424,10 @@
     { group: "Momentum", id: "rsiob", name: "RSI overbought", desc: "RSI(14) ≥ 70", test: r => r.rsi >= 70, cols: ["s", "c", "ch", "rsi", "r1m", "at"], sort: "rsi" },
     { group: "Momentum", id: "dipup", name: "Pullback in uptrend", desc: "RSI ≤ 40 while close > SMA200", test: r => r.rsi <= 40 && r.c > r.s200, cols: ["s", "c", "ch", "rsi", "r3m", "at"], sort: "rsi", dir: 1 },
     { group: "Momentum", id: "rs3m", name: "Outperforming NIFTY 50 (3M)", desc: "3-month return above the index, close > SMA200", test: r => isNum(r.r3m) && S.bench && r.r3m > S.bench.r3m && r.c > r.s200, cols: ["s", "c", "r3m", "r1m", "r1y", "rsi", "at"], sort: "r3m" },
+    { group: "VWAP", id: "vwreclaim", name: "Reclaimed 20-session VWAP", desc: "Closed back above the 20-session VWAP today", test: r => r.ev.includes("vw20_up"), cols: ["s", "c", "ch", "vwd", "vw20d", "rv", "at"], sort: "rv" },
+    { group: "VWAP", id: "vwstrong", name: "Strong close above VWAP on volume", desc: "Up day closing above session VWAP on ≥1.5× volume", test: r => r.ch > 0 && r.c > r.vw && r.rv >= 1.5, cols: ["s", "c", "ch", "vwd", "vw20d", "rv", "at"], sort: "rv" },
+    { group: "VWAP", id: "vwtrend", name: "Above VWAP20 in an uptrend", desc: "Close > 20-session VWAP and > SMA200", test: r => r.c > r.vw20 && r.c > r.s200, cols: ["s", "c", "ch", "vw20d", "r1m", "rsi", "at"], sort: "vw20d" },
+    { group: "VWAP", id: "vwlost", name: "Lost 20-session VWAP", desc: "Closed below the 20-session VWAP today", test: r => r.ev.includes("vw20_dn"), cols: ["s", "c", "ch", "vwd", "vw20d", "rv", "at"], sort: "ch", dir: 1 },
     { group: "Volume", id: "vol3", name: "Volume shockers", desc: "Volume ≥ 3× the 20-session average", test: r => r.ev.includes("vol3"), cols: ["s", "c", "ch", "rv", "at", "rsi"], sort: "rv" },
     { group: "Volume", id: "volup", name: "High-volume up day", desc: "Up ≥2% on ≥2× average volume", test: r => r.ch >= 2 && r.rv >= 2, cols: ["s", "c", "ch", "rv", "at", "rsi"], sort: "rv" },
     { group: "Candlesticks", id: "bullen", name: "Bullish engulfing", desc: "Green body engulfs the prior red body", test: r => r.ev.includes("bull_engulf"), cols: ["s", "c", "ch", "rsi", "rv", "at"], sort: "rv" },
@@ -425,7 +443,7 @@
   const FIELDS = [
     ["c", "Close (₹)"], ["ch", "1D change %"], ["r1w", "1W return %"], ["r1m", "1M return %"], ["r3m", "3M return %"], ["r6m", "6M return %"], ["r1y", "1Y return %"],
     ["dh", "% from 52W high"], ["dl", "% above 52W low"], ["rsi", "RSI 14"], ["rv", "Relative volume ×"], ["at", "Avg turnover (₹ cr)"], ["atrp", "ATR % of price"],
-    ["gap", "Gap %"], ["macdh", "MACD histogram"], ["s20", "SMA20"], ["s50", "SMA50"], ["s200", "SMA200"], ["e20", "EMA20"],
+    ["gap", "Gap %"], ["vw", "VWAP (today)"], ["vw20", "VWAP (20 sessions)"], ["macdh", "MACD histogram"], ["s20", "SMA20"], ["s50", "SMA50"], ["s200", "SMA200"], ["e20", "EMA20"],
     ["mcap", "Market cap (₹ cr)"], ["pe", "P/E (TTM)"], ["eps", "EPS (TTM, ₹)"], ["pb", "P/B"], ["dy", "Dividend yield %"],
     ["roe", "ROE %"], ["roce", "ROCE %"], ["de", "Debt / equity"],
   ];
