@@ -34,10 +34,16 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import update_nse_data as core  # noqa: E402  (shared loaders, HTTP helper, CA rule)
+import fundamentals as fund  # noqa: E402
 
 ROOT = core.ROOT
 DEFAULT_OUT = ROOT / "data" / "market"
 CONSTITUENTS_CACHE = ROOT / "data" / "index_constituents.csv"
+FUNDAMENTALS_PATH = ROOT / "data" / "fundamentals.csv"
+EQUITY_LIST_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+EQUITY_LIST_CACHE = ROOT / "data" / "nse_equity_list.csv"
+MIN_EQUITY_LIST = 1500
+FUND_COLUMNS = ["pe", "eps", "mcap", "pb", "dy", "roe", "roce", "de", "fa"]
 CONSTITUENT_COLUMNS = ("symbol", "name", "industry", "cap", "nifty50")
 INDEX_BASE = "https://nsearchives.nseindia.com/content/indices/"
 # Ordered: a symbol takes the bucket of the first list it appears in.
@@ -60,7 +66,7 @@ SNAPSHOT_COLUMNS = [
     "r1w", "r1m", "r3m", "r6m", "r1y", "h52", "l52", "dh", "dl",
     "s20", "s50", "s200", "e20", "rsi", "atrp", "macd", "macds", "macdh", "gap",
     "ev", "ca", "stale", "key", "len",
-]
+] + FUND_COLUMNS
 
 
 # --------------------------------------------------------------------------- constituents
@@ -123,6 +129,81 @@ def fetch_constituents(fetch=core.request_bytes) -> tuple[dict[str, dict[str, An
                 + (f"using cached classification for {len(cached)} symbols." if cached
                    else "no cache exists, so names, industries and size buckets are blank."))
         return cached, "cached index constituent lists" if cached else "none", note
+
+
+def fetch_equity_list(fetch=core.request_bytes) -> tuple[list[dict[str, str]], str | None]:
+    """NSE's full EQ list (symbol, company name, ISIN), cached like the constituents."""
+    try:
+        rows = fund.parse_equity_list(fetch(EQUITY_LIST_URL))
+        if len(rows) < MIN_EQUITY_LIST:
+            raise ValueError(f"only {len(rows)} securities parsed")
+        with EQUITY_LIST_CACHE.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=("symbol", "name", "isin"))
+            writer.writeheader()
+            writer.writerows(sorted(rows, key=lambda r: r["symbol"]))
+        return rows, None
+    except Exception as exc:
+        if EQUITY_LIST_CACHE.exists():
+            with EQUITY_LIST_CACHE.open(newline="", encoding="utf-8") as fh:
+                cached = list(csv.DictReader(fh))
+            return cached, f"NSE equity list unavailable ({type(exc).__name__}); using cached list of {len(cached)}."
+        return [], f"NSE equity list unavailable ({type(exc).__name__}: {exc}); company names limited to index members."
+
+
+def file_commit_date(path: Path) -> str | None:
+    """Last git commit date of a file (YYYY-MM-DD), used when a CSV has no as_of column."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "log", "-1", "--format=%cs", "--", str(path)], cwd=ROOT,
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+        return out or None
+    except Exception:
+        return None
+
+
+def load_fundamentals(known: set[str], equity_list: list[dict[str, str]],
+                      constituents: dict[str, dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], list[str], str | None]:
+    """Return (symbol -> export row, warnings, default as_of)."""
+    if not FUNDAMENTALS_PATH.exists():
+        return {}, [], None
+    try:
+        rows, warnings = fund.parse_fundamentals_csv(FUNDAMENTALS_PATH.read_bytes(), core.iso_date)
+    except ValueError as exc:
+        return {}, [f"data/fundamentals.csv ignored: {exc}"], None
+    isin_map = {r["isin"]: r["symbol"] for r in equity_list if r.get("isin")}
+    name_map: dict[str, str] = {}
+    for r in equity_list:
+        name_map.setdefault(fund.norm_name(r["name"]), r["symbol"])
+    for sym, info in constituents.items():
+        name_map.setdefault(fund.norm_name(info.get("name", "")), sym)
+    resolved, more = fund.resolve_symbols(rows, known, isin_map, name_map)
+    return resolved, warnings + more, file_commit_date(FUNDAMENTALS_PATH)
+
+
+def close_on_or_before(s: dict[str, list[float]], day: str | None) -> float | None:
+    if not day:
+        return s["c"][-1] if s["c"] else None
+    for d, c in zip(reversed(s["date"]), reversed(s["c"])):
+        if d <= day:
+            return c
+    return None
+
+
+def fundamentals_for(row: dict[str, Any] | None, s: dict[str, list[float]], jumps: list[dict[str, Any]],
+                     default_as_of: str | None) -> tuple[dict[str, Any], str | None]:
+    """Daily ratios for one symbol, or blanks with a reason when the export is unusable."""
+    blank = {k: None for k in FUND_COLUMNS}
+    if not row:
+        return blank, None
+    as_of = row["as_of"] or default_as_of
+    later_jump = next((j["date"] for j in jumps if as_of and j["date"] > as_of), None)
+    if later_jump:
+        return {**blank, "fa": as_of}, later_jump
+    base = fund.base_values(row, close_on_or_before(s, as_of))
+    out = {k: rnd(v, 2) for k, v in fund.daily_ratios(base, s["c"][-1]).items()}
+    out["mcap"] = rnd(out["mcap"], 0) if out["mcap"] is not None else None
+    out["fa"] = as_of
+    return out, None
 
 
 # --------------------------------------------------------------------------- indicators
@@ -266,7 +347,7 @@ def stock_key(symbol: str, used: set[str]) -> str:
 
 
 def snapshot_row(symbol: str, s: dict[str, list[float]], info: dict[str, Any], jumps: list[dict[str, Any]],
-                 latest_date: str, key: str) -> list[Any]:
+                 latest_date: str, key: str, fvals: dict[str, Any] | None = None) -> list[Any]:
     i = len(s["c"]) - 1
     c = s["c"]
     dates = s["date"]
@@ -296,6 +377,7 @@ def snapshot_row(symbol: str, s: dict[str, list[float]], info: dict[str, Any], j
         "gap": rnd((s["o"][i] / prev - 1) * 100) if finite(prev) and prev > 0 else None,
         "ev": events_for(s), "ca": jumps[-1]["date"] if jumps else None,
         "stale": 1 if dates[i] != latest_date else 0, "key": key, "len": len(c),
+        **{k: None for k in FUND_COLUMNS}, **(fvals or {}),
     }
     return [row[col] for col in SNAPSHOT_COLUMNS]
 
@@ -343,7 +425,11 @@ def write_compact(path: Path, content: Any) -> int:
 
 
 def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]], out_dir: Path,
-          source_note: str, warnings: list[str]) -> dict[str, Any]:
+          source_note: str, warnings: list[str], equity_list: list[dict[str, str]] | None = None,
+          fundamentals: dict[str, dict[str, Any]] | None = None, fundamentals_as_of: str | None = None) -> dict[str, Any]:
+    equity_names = {r["symbol"]: r["name"] for r in (equity_list or [])}
+    fundamentals = fundamentals or {}
+    fund_blocked: list[str] = []
     by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in history:
         by_symbol[row["symbol"]].append(row)
@@ -366,7 +452,14 @@ def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]]
         s = series(by_symbol[symbol])
         all_series[symbol] = s
         key = stock_key(symbol, used)
-        rows.append(snapshot_row(symbol, s, constituents.get(symbol, {}), jump_flags.get(symbol, []), latest, key))
+        info = dict(constituents.get(symbol, {}))
+        if not info.get("name") and symbol in equity_names:
+            info["name"] = equity_names[symbol]
+        jumps = jump_flags.get(symbol, [])
+        fvals, blocked_by = fundamentals_for(fundamentals.get(symbol), s, jumps, fundamentals_as_of)
+        if blocked_by:
+            fund_blocked.append(f"{symbol} ({blocked_by})")
+        rows.append(snapshot_row(symbol, s, info, jumps, latest, key, fvals))
         bars = [[d, rnd(o), rnd(h), rnd(l), rnd(c), int(v)]
                 for d, o, h, l, c, v in zip(s["date"], s["o"], s["h"], s["l"], s["c"], s["v"])]
         stock_bytes += write_compact(stocks_dir / f"{key}.json", {"s": symbol, "bars": bars})
@@ -389,7 +482,20 @@ def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]]
                      **{k: rnd((bc[i] / bc[i - n] - 1) * 100) if i >= n else None for k, n in RETURN_WINDOWS.items()},
                      "s50": rnd(bench["s50"][i]), "s200": rnd(bench["s200"][i]), "rsi": rnd(bench["rsi"][i], 1)}
     classified = sum(1 for r in rows if r[SNAPSHOT_COLUMNS.index("cap")])
+    fa_idx, pe_idx, mc_idx = (SNAPSHOT_COLUMNS.index(k) for k in ("fa", "pe", "mcap"))
+    fund_dates = sorted({r[fa_idx] for r in rows if r[fa_idx]})
+    if fund_blocked:
+        warnings.append(f"Fundamentals blanked for {len(fund_blocked)} stock(s) with a >=40% price jump after the "
+                        f"export date (likely split/bonus; re-export to refresh): {', '.join(fund_blocked[:10])}"
+                        f"{' …' if len(fund_blocked) > 10 else ''}.")
+    meta_fund = {
+        "available": bool(fundamentals),
+        "stocks": sum(1 for r in rows if r[pe_idx] is not None or r[mc_idx] is not None),
+        "as_of_min": fund_dates[0] if fund_dates else None, "as_of_max": fund_dates[-1] if fund_dates else None,
+        "source": "data/fundamentals.csv (user export); P/E, market cap, P/B and yield recomputed at each close",
+    }
     meta = {
+        "fundamentals": meta_fund,
         "schema_version": 1,
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
         "latest_market_date": latest, "history_start": equity_dates[0], "sessions": len(equity_dates),
@@ -420,9 +526,15 @@ def main(argv: list[str]) -> int:
         return 1
     constituents, source, note = fetch_constituents()
     warnings = [note] if note else []
-    summary = build(history, constituents, out_dir, source, warnings)
+    equity_list, eq_note = fetch_equity_list()
+    if eq_note:
+        warnings.append(eq_note)
+    known = {r["symbol"] for r in history if not r["symbol"].startswith("NIFTY")}
+    fundamentals, fund_warnings, fund_as_of = load_fundamentals(known, equity_list, constituents)
+    warnings += fund_warnings
+    summary = build(history, constituents, out_dir, source, warnings, equity_list, fundamentals, fund_as_of)
     print(json.dumps({k: summary[k] for k in ("latest_market_date", "sessions", "symbols", "classified_symbols",
-                                              "stale_symbols", "classification_source", "bytes")}, indent=2))
+                                              "stale_symbols", "classification_source", "fundamentals", "bytes")}, indent=2))
     for w in warnings:
         print("WARNING:", w, file=sys.stderr)
     return 0
