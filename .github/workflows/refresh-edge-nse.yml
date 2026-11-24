@@ -75,7 +75,13 @@ jobs:
             echo "No changes in history or screen output."
           else
             git commit -m "Refresh automated NSE EOD screen"
-            git push
+            # A re-run checks out the original commit, and an earlier attempt may already
+            # have pushed data on top of it. Rebase onto the current branch before pushing.
+            for attempt in 1 2 3; do
+              git pull --rebase -X theirs origin "${GITHUB_REF_NAME}" && git push && break
+              if [ "$attempt" = 3 ]; then echo "::error::Could not push refreshed data after 3 attempts"; exit 1; fi
+              sleep $((attempt * 5))
+            done
           fi
 
       - name: Configure GitHub Pages
