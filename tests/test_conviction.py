@@ -87,13 +87,14 @@ class RegimeAndVerdictTests(unittest.TestCase):
         self.assertFalse(conv.market_regime(down)[ds[-1]])
         self.assertNotIn(ds[10], conv.market_regime(up))
 
-    def test_verdict_uses_regime_on_sample(self):
-        good = {"h10": {"on": {"n": 50, "median": 1.0, "excess": 0.8}}}
-        weak = {"h10": {"on": {"n": 50, "median": -0.2, "excess": 0.8}}}
-        tiny = {"h10": {"on": {"n": 5, "median": 3.0, "excess": 2.0}}}
-        self.assertEqual(conv.verdict(good), "supported")
-        self.assertEqual(conv.verdict(weak), "not_supported")
-        self.assertEqual(conv.verdict(tiny), "insufficient")
+    def test_verdict_uses_regime_on_trade_days(self):
+        def st(days, avg, t, excess=0.5):
+            return {"trade": {"on": {"days": days, "avg_r": avg, "t_days": t}}, "h10": {"on": {"excess": excess}}}
+        self.assertEqual(conv.verdict(st(40, 0.2, 2.5)), "supported")
+        self.assertEqual(conv.verdict(st(40, 0.2, 2.5, excess=-0.1)), "weak")
+        self.assertEqual(conv.verdict(st(40, 0.1, 1.2)), "weak")
+        self.assertEqual(conv.verdict(st(40, -0.1, 0.5)), "not_supported")
+        self.assertEqual(conv.verdict(st(10, 0.5, 4.0)), "insufficient")
 
 
 class BacktestTests(unittest.TestCase):
@@ -113,12 +114,56 @@ class BacktestTests(unittest.TestCase):
         for st in out["scans"].values():
             self.assertLessEqual(st["h10"]["all"]["n"], base["n"])
 
-    def test_split_stocks_excluded(self):
-        ds = days(240)
-        bench = {d: 100.0 for d in ds}
-        s = conv.extend(market.series(rows("X", wave(240))), bench)
-        out = conv.backtest({"X": s}, {"X"}, ds, bench)
-        self.assertEqual(out["baseline"]["h10"]["all"]["n"], 0)
+    def test_split_window_is_skipped_not_whole_stock(self):
+        n = 480
+        ds = days(n)
+        bench = {d: 100.0 + i * 0.01 for i, d in enumerate(ds)}
+        closes = wave(n)
+        closes = closes[:300] + [c / 2 for c in closes[300:]]  # bonus-like halving at index 300
+        s = conv.extend(market.series(rows("X", closes)), bench)
+        out = conv.backtest({"X": s}, set(), ds, bench)
+        clean = conv.backtest({"Y": conv.extend(market.series(rows("Y", wave(n))), bench)}, set(), ds, bench)
+        got, full = out["baseline"]["h10"]["all"]["n"], clean["baseline"]["h10"]["all"]["n"]
+        self.assertGreater(got, 0)                      # pre-split history still used
+        # blocked: 15 before to 250 after the jump (285..550), clipped to the last day with a 10-day window (469)
+        self.assertEqual(full - got, (480 - 11) - (300 - 15) + 1)
+
+
+class TradeSimulationTests(unittest.TestCase):
+    def series_from(self, bars):
+        n = len(bars)
+        return {"o": [b[0] for b in bars], "h": [b[1] for b in bars], "l": [b[2] for b in bars],
+                "c": [b[3] for b in bars], "atr": [5.0] * n}
+
+    def test_target_hit_is_two_r_minus_costs(self):
+        # signal close 100, ATR 5 -> trigger 100.25, stop 90; next bar fills, then target 120.75 hit
+        s = self.series_from([(100, 101, 99, 100), (100, 101, 99.5, 100.5), (101, 125, 100.5, 124)])
+        outcome, r = conv.simulate_trade(s, 0)
+        risk = 100.25 - 90
+        self.assertEqual(outcome, "trade")
+        self.assertAlmostEqual(r, ((100.25 + 2 * risk) / 100.25 - 1 - conv.ROUND_TRIP_COST) / (risk / 100.25), places=6)
+
+    def test_stop_first_when_both_touch(self):
+        s = self.series_from([(100, 101, 99, 100), (100, 101, 99.5, 100.5), (101, 125, 85, 100)])
+        outcome, r = conv.simulate_trade(s, 0)
+        self.assertLess(r, -1)  # -1R plus costs
+
+    def test_gap_below_stop_fills_at_open(self):
+        s = self.series_from([(100, 101, 99, 100), (100, 101, 99.5, 100.5), (80, 82, 79, 81)])
+        _, r = conv.simulate_trade(s, 0)
+        self.assertLess(r, -1.9)  # opened at 80, well through the 90 stop
+
+    def test_no_trigger_expires(self):
+        s = self.series_from([(100, 101, 99, 100)] + [(99, 100, 98, 99)] * 5)
+        self.assertEqual(conv.simulate_trade(s, 0), ("expired", None))
+
+    def test_rolling_extreme_matches_naive(self):
+        import random
+        rng = random.Random(1)
+        vals = [rng.random() for _ in range(400)]
+        for fn in (max, min):
+            naive = [fn(vals[max(0, i - 49):i + 1]) for i in range(len(vals))]
+            self.assertEqual(market.rolling_extreme(vals, 50, fn), naive)
 
 
 class AnnotateTests(unittest.TestCase):
@@ -143,3 +188,27 @@ class AnnotateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArchiveTests(unittest.TestCase):
+    def test_write_load_and_sync(self):
+        import archive_nse as arch
+        with tempfile.TemporaryDirectory() as tmp:
+            original = arch.ARCHIVE_DIR
+            arch.ARCHIVE_DIR = Path(tmp)
+            try:
+                hist = []
+                for d in ["2026-08-28", "2026-08-31", "2026-09-01", "2026-09-30", "2026-10-01"]:
+                    hist.append({"date": d, "symbol": "ABC", "open": 10.0, "high": 11.0, "low": 9.0,
+                                 "close": 10.5, "volume": 100.0, "value": 1000.0})
+                written = arch.sync_from_history(hist, today=dt.date(2026, 10, 15))
+                self.assertEqual(written, ["2026-09"])  # Aug incomplete in history, Oct is current
+                first = (Path(tmp) / "2026-09.csv.gz").read_bytes()
+                arch.write_month("2026-09", [r for r in hist if r["date"].startswith("2026-09")])
+                self.assertEqual(first, (Path(tmp) / "2026-09.csv.gz").read_bytes())  # deterministic gzip
+                by = arch.load_by_symbol([{**hist[2], "close": 10.9}])
+                self.assertEqual(sorted(by["ABC"]), ["2026-09-01", "2026-09-30"])
+                self.assertEqual(by["ABC"]["2026-09-01"][3], 10.9)   # history overrides archive
+                self.assertEqual(by["ABC"]["2026-09-30"][5], 1000.0)
+            finally:
+                arch.ARCHIVE_DIR = original

@@ -65,6 +65,28 @@ Limits:
 
 Treat verdicts as directional evidence, and re-check them as history accumulates. The verdicts recompute on every run.
 
+### Multi-year research archive
+
+`data/history.csv` keeps a rolling ~320 sessions for the live screen. Backtests need several market regimes, so older sessions live in write-once monthly files, `data/archive/YYYY-MM.csv.gz` (same columns, NIFTY 50 included), from January 2021.
+
+- The data comes from NSE's CM-UDiFF bhavcopy (2024 onwards) and the older `cmDDMONYYYYbhav.csv` format (before 2024).
+- The archive includes stocks that later delisted, so it suffers less survivorship bias than the live universe.
+- A month file is written once when complete, with deterministic gzip, and never rewritten.
+- Each daily run archives any newly completed month from `history.csv` (`archive_nse.py sync`), with no extra downloads.
+
+To rebuild or extend the archive (about 35 seconds per month):
+
+```bash
+python .github/scripts/archive_nse.py backfill 2021-01 2025-09
+```
+
+The evidence on the Scans page and in the scanner banner is computed over archive plus history, one symbol at a time. It reports:
+- the trade-rule simulation in R, with t-statistics computed across signal days, not individual trades
+- forward returns against the average stock
+- results split by market regime and by year
+
+Split and bonus distortions are handled by skipping signals within 250 sessions after or 15 before a one-day move of 40% or more, instead of dropping the whole stock.
+
 ### Fundamentals (P/E, market cap, P/B, dividend yield, ROE, ROCE, debt/equity)
 
 Free automated sources are blocked from GitHub's cloud runners: NSE's website returns 403 behind bot protection and Yahoo Finance returns 429. So fundamentals come from a CSV you commit as `data/fundamentals.csv`, refreshed after each quarterly results season.

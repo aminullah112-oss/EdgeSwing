@@ -258,8 +258,20 @@ def wilder_rsi(closes: list[float], length: int = 14) -> list[float]:
 
 
 def rolling_extreme(values: list[float], length: int, fn) -> list[float]:
-    """fn(window) over the trailing `length` values including i (shorter at the start)."""
-    return [fn(values[max(0, i - length + 1):i + 1]) for i in range(len(values))]
+    """fn (max or min) over the trailing `length` values including i (shorter at the start).
+    Monotonic deque: O(n), needed for multi-year research series."""
+    from collections import deque
+    better = (lambda a, b: a >= b) if fn is max else (lambda a, b: a <= b)
+    dq: deque[int] = deque()
+    out = []
+    for i, v in enumerate(values):
+        while dq and better(v, values[dq[-1]]):
+            dq.pop()
+        dq.append(i)
+        if dq[0] <= i - length:
+            dq.popleft()
+        out.append(values[dq[0]])
+    return out
 
 
 def series(rows: list[dict[str, Any]]) -> dict[str, list[float]]:
@@ -357,6 +369,32 @@ def stock_key(symbol: str, used: set[str]) -> str:
         key, n = f"{base}_{n}", n + 1
     used.add(key)
     return key
+
+
+def research_evidence(history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Backtest every scan over the multi-year archive plus current history, one symbol at a time."""
+    import archive_nse
+    data = archive_nse.load_by_symbol(history)
+    bench = data.get(BENCHMARK, {})
+    bench_close = {d: v[3] for d, v in bench.items()}
+    if len(bench_close) < 60:
+        return None
+    bt = conv.Backtest(bench_close)
+    symbols = 0
+    for symbol in sorted(data):
+        if symbol.startswith("NIFTY") or symbol == "DEMO_INDEX":
+            continue
+        bars = data[symbol]
+        if len(bars) <= conv.WARMUP + 1:
+            continue
+        rows = [{"date": d, "symbol": symbol, "open": b[0], "high": b[1], "low": b[2], "close": b[3],
+                 "volume": b[4], "value": b[5]} for d, b in sorted(bars.items())]
+        bt.add(conv.extend(series(rows), bench_close))
+        symbols += 1
+    out = bt.result()
+    out["symbols"] = symbols
+    out["source"] = "data/archive monthly files + data/history.csv"
+    return out
 
 
 def regime_today(bench_close: dict[str, float]) -> dict[str, Any] | None:
@@ -465,7 +503,8 @@ def write_compact(path: Path, content: Any) -> int:
 
 def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]], out_dir: Path,
           source_note: str, warnings: list[str], equity_list: list[dict[str, str]] | None = None,
-          fundamentals: dict[str, dict[str, Any]] | None = None, fundamentals_as_of: str | None = None) -> dict[str, Any]:
+          fundamentals: dict[str, dict[str, Any]] | None = None, fundamentals_as_of: str | None = None,
+          evidence: dict[str, Any] | None = None) -> dict[str, Any]:
     equity_names = {r["symbol"]: r["name"] for r in (equity_list or [])}
     fundamentals = fundamentals or {}
     fund_blocked: list[str] = []
@@ -534,10 +573,8 @@ def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]]
         "as_of_min": fund_dates[0] if fund_dates else None, "as_of_max": fund_dates[-1] if fund_dates else None,
         "source": "data/fundamentals.csv (user export); P/E, market cap, P/B and yield recomputed at each close",
     }
-    evidence = conv.backtest(all_series, set(jump_flags), equity_dates, bench_close) if bench_close else None
-    if evidence:
-        for sid, st in evidence["scans"].items():
-            st["verdict"] = conv.verdict(st)
+    if evidence is None:
+        evidence = conv.backtest(all_series, set(jump_flags), equity_dates, bench_close) if bench_close else None
     meta = {
         "conviction": {"regime": regime_today(bench_close),
                        "factors": [{"id": k, "label": v} for k, v in conv.FACTORS],
@@ -580,7 +617,8 @@ def main(argv: list[str]) -> int:
     known = {r["symbol"] for r in history if not r["symbol"].startswith("NIFTY")}
     fundamentals, fund_warnings, fund_as_of = load_fundamentals(known, equity_list, constituents)
     warnings += fund_warnings
-    summary = build(history, constituents, out_dir, source, warnings, equity_list, fundamentals, fund_as_of)
+    evidence = research_evidence(history)
+    summary = build(history, constituents, out_dir, source, warnings, equity_list, fundamentals, fund_as_of, evidence)
     print(json.dumps({k: summary[k] for k in ("latest_market_date", "sessions", "symbols", "classified_symbols",
                                               "stale_symbols", "classification_source", "fundamentals", "bytes")}, indent=2))
     annotate_screen(out_dir / "snapshot.json", core.SCREEN_PATH)
@@ -608,7 +646,8 @@ def annotate_screen(snapshot_path: Path, screen_path: Path) -> int:
     screen["market_regime"] = cmeta.get("regime")
     ev = cmeta.get("evidence") or {}
     setup_ids = {"breakout": "scr_breakout", "pullback": "scr_pullback", "relative_strength": "scr_rs"}
-    screen["setup_evidence"] = {k: {**ev["scans"][v]["h10"], "verdict": ev["scans"][v].get("verdict")}
+    screen["setup_evidence"] = {k: {**ev["scans"][v]["h10"], "trade": ev["scans"][v].get("trade"),
+                                    "by_year_on": ev["scans"][v].get("by_year_on"), "verdict": ev["scans"][v].get("verdict")}
                                 for k, v in setup_ids.items() if v in ev.get("scans", {})}
     screen["setup_evidence_period"] = ev.get("period")
     core.write_json(screen_path, screen, compact=True)

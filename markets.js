@@ -485,7 +485,11 @@
     });
   }
   // ---- conviction evidence (backtest published by build_market_data.py / conviction.py)
-  const VERDICT = { supported: "Edge supported", not_supported: "No edge", insufficient: "Too few signals" };
+  const VERDICT = { supported: "Edge supported", weak: "Weak edge", not_supported: "No edge", insufficient: "Too few signals" };
+  const fmtR = x => isNum(x) ? `${x > 0 ? "+" : ""}${nf(x, 2)}R` : "—";
+  function tradeStat(t) {
+    return t && t.trades ? `<b>${fmtR(t.avg_r)}</b> avg/trade · ${nf(t.win, 0)}% win · t ${isNum(t.t_days) ? nf(t.t_days, 1) : "—"} · ${t.trades} trades on ${t.days} days` : "no trades";
+  }
   function regimeNotice() {
     const reg = S.snap?.meta?.conviction?.regime;
     if (!reg) return "";
@@ -500,22 +504,36 @@
     const ev = S.snap?.meta?.conviction?.evidence, st = ev?.scans?.[id];
     if (!st) return "";
     return `<div class="mx-evidence"><div><span class="verdict ${st.verdict}">${VERDICT[st.verdict] || st.verdict}</span>
-      <small>Backtest ${esc(ev.period[0])} to ${esc(ev.period[1])}: next-open entry, 10-session exit</small></div>
-      <div class="mx-evidence-row"><span>NIFTY above SMA50</span><span>${evStat(st.h10.on)}</span></div>
-      <div class="mx-evidence-row"><span>NIFTY below SMA50</span><span>${evStat(st.h10.off)}</span></div></div>`;
+      <small>Backtest ${esc(ev.period[0])} to ${esc(ev.period[1])}</small></div>
+      <div class="mx-evidence-row"><span>Trade rules, NIFTY above SMA50</span><span>${tradeStat(st.trade?.on)}</span></div>
+      <div class="mx-evidence-row"><span>Trade rules, NIFTY below SMA50</span><span>${tradeStat(st.trade?.off)}</span></div>
+      <div class="mx-evidence-row"><span>10-session return, regime on</span><span>${evStat(st.h10.on)}</span></div>
+      ${yearRow(st.by_year_on)}</div>`;
+  }
+  function yearRow(by) {
+    const ys = Object.entries(by || {});
+    return ys.length ? `<div class="mx-evidence-row"><span>By year (regime on)</span><span>${ys.map(([y, t]) =>
+      `${esc(y)}: <b class="${(t.avg_r || 0) > 0 ? "up" : "down"}">${fmtR(t.avg_r)}</b> (${t.trades || 0})`).join(" · ")}</span></div>` : "";
   }
   function evidenceTable() {
     const ev = S.snap?.meta?.conviction?.evidence;
     if (!ev) return "";
     const rows = [...Object.entries(ev.scans), ["baseline", { name: "All liquid stocks (baseline)", ...ev.baseline }]];
     const cell = h => h && h.n ? `${h.median > 0 ? "+" : ""}${nf(h.median, 2)}% <small>${nf(h.hit, 0)}% hit · n ${h.n}</small>` : "—";
+    const tcell = t => t && t.trades ? `${fmtR(t.avg_r)} <small>${nf(t.win, 0)}% win · ${t.days} days · t ${isNum(t.t_days) ? nf(t.t_days, 1) : "—"}</small>` : "—";
+    const years = [...new Set(Object.values(ev.scans).flatMap(st => Object.keys(st.by_year_on || {})))].sort();
     return `<section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Does any of this work? Backtest evidence</h2>
-      <p>${esc(ev.period[0])} to ${esc(ev.period[1])} (${ev.regime_days.on} sessions with NIFTY above SMA50, ${ev.regime_days.off} below). ${esc(ev.method)}</p></div></div>
-      <div class="table-wrap"><table class="mx-table"><thead><tr><th>SCAN</th><th class="num">10D · NIFTY ABOVE SMA50</th><th class="num">VS AVG STOCK</th><th class="num">10D · NIFTY BELOW SMA50</th><th>VERDICT</th></tr></thead>
-      <tbody>${rows.map(([id, st]) => `<tr><td>${esc(st.name)}</td><td class="num">${cell(st.h10.on)}</td>
+      <p>${esc(ev.period[0])} to ${esc(ev.period[1])}${ev.symbols ? ` · ${ev.symbols.toLocaleString("en-IN")} stocks incl. later-delisted` : ""} · ${ev.regime_days.on} sessions with NIFTY above SMA50, ${ev.regime_days.off} below.</p></div></div>
+      <div class="table-wrap"><table class="mx-table"><thead><tr><th>SCAN</th><th class="num">TRADE RULES · REGIME ON</th><th class="num">TRADE RULES · REGIME OFF</th><th class="num">10D RETURN · REGIME ON</th><th class="num">VS AVG STOCK</th><th>VERDICT</th></tr></thead>
+      <tbody>${rows.map(([id, st]) => `<tr><td>${esc(st.name)}</td><td class="num">${id === "baseline" ? "—" : tcell(st.trade?.on)}</td>
+        <td class="num">${id === "baseline" ? "—" : tcell(st.trade?.off)}</td><td class="num">${cell(st.h10.on)}</td>
         <td class="num">${id === "baseline" ? "—" : (st.h10.on?.n ? `${st.h10.on.excess > 0 ? "+" : ""}${nf(st.h10.on.excess, 2)} pp` : "—")}</td>
-        <td class="num">${cell(st.h10.off)}</td><td>${st.verdict ? `<span class="verdict ${st.verdict}">${VERDICT[st.verdict]}</span>` : ""}</td></tr>`).join("")}</tbody></table></div>
-      <p class="small-note">One market cycle of data with survivorship bias (delisted stocks absent) and unadjusted prices (split-affected stocks excluded). Signals cluster on a few dates, so effective sample sizes are smaller than n suggests. Treat this as directional evidence, not proof.</p></section>`;
+        <td>${st.verdict ? `<span class="verdict ${st.verdict}">${VERDICT[st.verdict]}</span>` : ""}</td></tr>`).join("")}</tbody></table></div>
+      ${years.length ? `<h3 class="mx-subhead">Average R per trade by year, regime on: does the edge hold across markets?</h3>
+      <div class="table-wrap"><table class="mx-table"><thead><tr><th>SCAN</th>${years.map(y => `<th class="num">${esc(y)}</th>`).join("")}</tr></thead>
+      <tbody>${Object.values(ev.scans).map(st => `<tr><td>${esc(st.name)}</td>${years.map(y => { const t = st.by_year_on?.[y];
+        return `<td class="num">${t && t.trades ? `<span class="${t.avg_r > 0 ? "up" : "down"}">${fmtR(t.avg_r)}</span> <small>${t.trades}</small>` : "—"}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>` : ""}
+      <p class="small-note">${esc(ev.method)} Verdict: "supported" needs ≥30 signal days, positive average R, t ≥ 2 and a positive 10-day excess; "weak" is positive R with t ≥ 1. Prices are unadjusted, so windows around splits/bonuses are skipped. Past results, not a forecast.</p></section>`;
   }
   function convictionPanel(r) {
     const factors = S.snap?.meta?.conviction?.factors || [];

@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import math
 import statistics
+from array import array
+from collections import defaultdict
 from typing import Any, Callable
 
 FACTORS = [
@@ -95,9 +97,15 @@ def extend(s: dict[str, list], bench_close: dict[str, float]) -> dict[str, list]
                  for i in range(n)]
     up = [v[i] if i and c[i] > c[i - 1] else 0.0 for i in range(n)]
     dn = [v[i] if i and c[i] < c[i - 1] else 0.0 for i in range(n)]
-    s["udr"] = [(sum(up[i - 19:i + 1]) / sum(dn[i - 19:i + 1])) if i >= 20 and sum(dn[i - 19:i + 1]) > 0 else math.nan
-                for i in range(n)]
-    s["hmax"] = [max(h[max(0, i - 249):i + 1]) for i in range(n)]
+    udr = [math.nan] * n
+    su = sd = 0.0
+    for i in range(n):
+        su += up[i]; sd += dn[i]
+        if i >= 20:
+            su -= up[i - 20]; sd -= dn[i - 20]
+            udr[i] = su / sd if sd > 0 else math.nan
+    s["udr"] = udr
+    s["hmax"] = s["h52"] if "h52" in s else [max(h[max(0, i - 249):i + 1]) for i in range(n)]
     return s
 
 
@@ -192,72 +200,205 @@ def market_regime(bench_close: dict[str, float], n: int = 50) -> dict[str, bool]
     return out
 
 
-def backtest(all_series: dict[str, dict], jump_symbols: set[str], dates: list[str],
-             bench_close: dict[str, float]) -> dict[str, Any]:
-    """Event study over stored history. Returns per-scan forward-return statistics,
-    overall and split by market regime (NIFTY 50 above / below its 50-session SMA)."""
-    scans = HC_SCANS + SCREENER_RULES
-    regime = market_regime(bench_close)
-    bdates = [d for d in dates if d in bench_close]
-    bmom = {d: (bench_close[d] / bench_close[bdates[k - 60]] - 1) if k >= 60 else math.nan for k, d in enumerate(bdates)}
-    date_idx = {d: k for k, d in enumerate(dates)}
-    universe: dict[int, dict[str, list[float]]] = {h: {} for h in HORIZONS}  # date -> fwd returns of eligible stocks
-    events: dict[str, dict[int, list[tuple[str, float]]]] = {sc["id"]: {h: [] for h in HORIZONS} for sc in scans}
-    first_eval = last_eval = None
-    for sym, s in all_series.items():
-        if sym in jump_symbols:
-            continue  # unadjusted splits/bonuses would fake returns
+# ----------------------------------------------------------------------------- trade simulation
+# The proposal rules the Stock scanner turns signals into (see README "Trade proposals").
+ENTRY_PAD, ENTRY_WINDOW, STOP_ATR, TARGET_R, MAX_HOLD = 0.0025, 3, 2.0, 2.0, 10
+ROUND_TRIP_COST = 0.0025   # 0.15% charges + 0.10% slippage
+JUMP_LOOKBACK, JUMP_LOOKAHEAD = 250, 15
+
+
+def simulate_trade(s: dict[str, list], i: int) -> tuple[str, float | None]:
+    """('trade', R) | ('expired', None) | ('open', None) for a signal on bar i.
+    Entry: stop-entry 0.25% above the signal close within 3 sessions (a gap fills at the open).
+    Exit: stop at close - 2*ATR(14) or target at 2R, stop assumed first when both touch in one bar;
+    otherwise the close after 10 sessions. R is net of costs."""
+    n = len(s["c"])
+    c, atr = s["c"][i], s["atr"][i]
+    if not finite(atr) or atr <= 0:
+        return "expired", None
+    trig, stop = c * (1 + ENTRY_PAD), c - STOP_ATR * atr
+    entry = None
+    for j in range(i + 1, min(i + 1 + ENTRY_WINDOW, n)):
+        if s["h"][j] >= trig:
+            entry = (j, max(trig, s["o"][j]))
+            break
+    if entry is None:
+        return ("expired", None) if i + ENTRY_WINDOW < n else ("open", None)
+    j0, ep = entry
+    risk = ep - stop
+    if risk <= 0:
+        return "expired", None
+    target = ep + TARGET_R * risk
+    exit_px = None
+    for j in range(j0, min(j0 + MAX_HOLD, n)):
+        if s["l"][j] <= stop:
+            exit_px = min(stop, s["o"][j]) if j > j0 else stop
+            break
+        if s["h"][j] >= target:
+            exit_px = max(target, s["o"][j]) if j > j0 else target
+            break
+    if exit_px is None:
+        if j0 + MAX_HOLD > n:
+            return "open", None
+        exit_px = s["c"][j0 + MAX_HOLD - 1]
+    return "trade", (exit_px / ep - 1 - ROUND_TRIP_COST) / (risk / ep)
+
+
+def jump_indices(s: dict[str, list]) -> list[int]:
+    c = s["c"]
+    return [j for j in range(1, len(c)) if c[j - 1] > 0 and abs(c[j] / c[j - 1] - 1) >= 0.4]
+
+
+class Backtest:
+    """Streaming event study: add one symbol's series at a time, then call result().
+
+    For each scan, a signal is a stock newly entering it. Two measurements:
+      * forward return: next session's open to the close after 5/10 sessions, compared with
+        the average eligible stock on the same date ("excess");
+      * trade simulation of the proposal rules, in R net of costs.
+    Signals and universe returns within 250 sessions before / 15 after a >=40% one-day move
+    are skipped (unadjusted splits/bonuses would fake returns); the rest of that stock is kept.
+    """
+
+    def __init__(self, bench_close: dict[str, float]):
+        self.scans = HC_SCANS + SCREENER_RULES
+        self.regime = market_regime(bench_close)
+        bdates = sorted(bench_close)
+        self.bmom = {d: (bench_close[d] / bench_close[bdates[k - 60]] - 1) if k >= 60 else math.nan
+                     for k, d in enumerate(bdates)}
+        self.uni_sum = {hz: defaultdict(float) for hz in HORIZONS}
+        self.uni_cnt = {hz: defaultdict(int) for hz in HORIZONS}
+        self.uni_all = {hz: array("d") for hz in HORIZONS}
+        self.uni_dates = {hz: [] for hz in HORIZONS}
+        # per scan: list of (date, {hz: fwd}, outcome, R)
+        self.events: dict[str, list[tuple[str, dict[int, float], str, float | None]]] = {sc["id"]: [] for sc in self.scans}
+        self.eval_dates: set[str] = set()
+
+    def add(self, s: dict[str, list]) -> None:
         n = len(s["c"])
-        prev = {sc["id"]: False for sc in scans}
+        jumps = jump_indices(s)
+        blocked = [False] * n
+        for j in jumps:
+            for k in range(max(0, j - JUMP_LOOKAHEAD), min(n, j + JUMP_LOOKBACK + 1)):
+                blocked[k] = True
+        prev = {sc["id"]: False for sc in self.scans}
         for i in range(WARMUP, n - 1):
-            if s["date"][i] not in date_idx or not eligible(s, i, BASE_MIN_TURNOVER):
-                prev = {k: False for k in prev}
+            d = s["date"][i]
+            if blocked[i] or d not in self.regime or not eligible(s, i, BASE_MIN_TURNOVER):
+                prev = dict.fromkeys(prev, False)
                 continue
-            f = factors_at(s, i)
-            sc_ = score(f)
-            bm = bmom.get(s["date"][i], math.nan)
             fwd = {}
             for hz in HORIZONS:
                 if i + hz < n and s["o"][i + 1] > 0:
-                    fwd[hz] = s["c"][i + hz] / s["o"][i + 1] - 1
-                    universe[hz].setdefault(s["date"][i], []).append(fwd[hz])
-            for scan in scans:
+                    r = s["c"][i + hz] / s["o"][i + 1] - 1
+                    fwd[hz] = r
+                    self.uni_sum[hz][d] += r
+                    self.uni_cnt[hz][d] += 1
+                    self.uni_all[hz].append(r)
+                    self.uni_dates[hz].append(d)
+            if fwd:
+                self.eval_dates.add(d)
+            f = factors_at(s, i)
+            sc_ = score(f)
+            bm = self.bmom.get(d, math.nan)
+            for scan in self.scans:
                 floor = HC_MIN_TURNOVER if scan["id"].startswith("hc_") else BASE_MIN_TURNOVER
                 hit = s["avgt"][i] >= floor and bool(scan["test"](s, i, f, sc_, bm))
-                if hit and not prev[scan["id"]]:
-                    for hz, r in fwd.items():
-                        events[scan["id"]][hz].append((s["date"][i], r))
-                    if fwd:
-                        first_eval = min(first_eval or s["date"][i], s["date"][i])
-                        last_eval = max(last_eval or s["date"][i], s["date"][i])
+                if hit and not prev[scan["id"]] and fwd:
+                    outcome, r_mult = simulate_trade(s, i)
+                    self.events[scan["id"]].append((d, fwd, outcome, r_mult))
                 prev[scan["id"]] = hit
-    uni_mean = {hz: {d: statistics.fmean(v) for d, v in by.items() if v} for hz, by in universe.items()}
-    out: dict[str, Any] = {"period": [first_eval, last_eval], "horizons": list(HORIZONS),
-                           "method": "New entries only; entry next session's open, exit close after N sessions; "
-                                     "excess = return minus the average eligible stock on the same date. "
-                                     "Unadjusted prices: stocks with a >=40% one-day jump are excluded.",
-                           "scans": {}}
-    def split(ev: list[tuple[str, float]], hz: int) -> dict[str, Any]:
-        groups = {"all": ev, "on": [e for e in ev if regime.get(e[0])], "off": [e for e in ev if regime.get(e[0]) is False]}
-        res = {}
-        for key, g in groups.items():
-            res[key] = _summary([r for _, r in g], [r - uni_mean[hz][d] for d, r in g if d in uni_mean[hz]])
-            res[key]["days"] = len({d for d, _ in g})
-        return res
 
-    for scan in scans:
-        out["scans"][scan["id"]] = {"name": scan["name"],
-                                    **{f"h{hz}": split(events[scan["id"]][hz], hz) for hz in HORIZONS}}
-    out["baseline"] = {f"h{hz}": split([(d, r) for d, v in universe[hz].items() for r in v], hz) for hz in HORIZONS}
-    eval_days = [d for d in dates[WARMUP:] if d in regime]
-    out["regime_days"] = {"on": sum(1 for d in eval_days if regime[d]), "off": sum(1 for d in eval_days if not regime[d])}
-    return out
+    def _fwd_stats(self, ev, hz) -> dict[str, Any]:
+        pairs = [(d, f[hz]) for d, f, _, _ in ev if hz in f]
+        out = _summary([r for _, r in pairs],
+                       [r - self.uni_sum[hz][d] / self.uni_cnt[hz][d] for d, r in pairs if self.uni_cnt[hz][d]])
+        out["days"] = len({d for d, _ in pairs})
+        return out
+
+    @staticmethod
+    def _trade_stats(ev) -> dict[str, Any]:
+        trades = [(d, r) for d, _, o, r in ev if o == "trade"]
+        expired = sum(1 for _, _, o, _ in ev if o == "expired")
+        if not trades:
+            return {"trades": 0, "expired": expired}
+        rs = [r for _, r in trades]
+        by_day: dict[str, list[float]] = defaultdict(list)
+        for d, r in trades:
+            by_day[d].append(r)
+        day_r = [statistics.fmean(v) for v in by_day.values()]
+        t = None
+        if len(day_r) >= 3 and statistics.pstdev(day_r) > 0:
+            t = statistics.fmean(day_r) / (statistics.stdev(day_r) / math.sqrt(len(day_r)))
+        return {"trades": len(rs), "expired": expired, "days": len(day_r),
+                "win": round(sum(1 for r in rs if r > 0) / len(rs) * 100, 1),
+                "avg_r": round(statistics.fmean(rs), 3), "median_r": round(statistics.median(rs), 2),
+                "days_positive": round(sum(1 for r in day_r if r > 0) / len(day_r) * 100, 1),
+                "t_days": round(t, 2) if t is not None else None}
+
+    def _group(self, ev) -> dict[str, Any]:
+        return {**{f"h{hz}": self._fwd_stats(ev, hz) for hz in HORIZONS}, "trade": self._trade_stats(ev)}
+
+    def result(self) -> dict[str, Any]:
+        dates = sorted(self.eval_dates)
+        out: dict[str, Any] = {
+            "period": [dates[0], dates[-1]] if dates else [None, None], "horizons": list(HORIZONS),
+            "method": ("New entries only. Forward return: next session's open to the close after N sessions; excess = "
+                       "minus the average eligible stock that date. Trade: proposal rules (stop-entry +0.25% within 3 "
+                       "sessions, stop close-2xATR, target 2R, max 10 sessions, stop-first), 0.25% round-trip costs, "
+                       "in R. t = mean of per-day average R / standard error across signal days. Windows around a >=40% "
+                       "one-day move (likely split/bonus) are skipped."),
+            "regime_days": {"on": sum(1 for d in dates if self.regime.get(d)), "off": sum(1 for d in dates if self.regime.get(d) is False)},
+            "scans": {},
+        }
+        for scan in self.scans:
+            ev = self.events[scan["id"]]
+            on = [e for e in ev if self.regime.get(e[0])]
+            off = [e for e in ev if self.regime.get(e[0]) is False]
+            years = sorted({e[0][:4] for e in on})
+            entry = {"name": scan["name"]}
+            for key, group in (("all", ev), ("on", on), ("off", off)):
+                g = self._group(group)
+                for k, v in g.items():
+                    entry.setdefault(k, {})[key] = v
+            entry["by_year_on"] = {y: self._trade_stats([e for e in on if e[0][:4] == y]) for y in years}
+            entry["verdict"] = verdict(entry)
+            out["scans"][scan["id"]] = entry
+        base: dict[str, Any] = {}
+        for hz in HORIZONS:
+            groups = {"all": list(range(len(self.uni_all[hz])))}
+            groups["on"] = [k for k, d in enumerate(self.uni_dates[hz]) if self.regime.get(d)]
+            groups["off"] = [k for k, d in enumerate(self.uni_dates[hz]) if self.regime.get(d) is False]
+            base[f"h{hz}"] = {}
+            for key, idx in groups.items():
+                vals = [self.uni_all[hz][k] for k in idx]
+                base[f"h{hz}"][key] = {**_summary(vals, [0.0] * len(vals)),
+                                       "days": len({self.uni_dates[hz][k] for k in idx})}
+        out["baseline"] = base
+        return out
 
 
-def verdict(stats: dict[str, Any], horizon: int = 10, min_n: int = 30) -> str:
-    """Judged on regime-on signals (the way high-conviction scans are meant to be used):
-    'supported' only with a meaningful sample, a positive median and a win over the average stock."""
-    h = stats.get(f"h{horizon}", {}).get("on", {})
-    if h.get("n", 0) < min_n:
+def backtest(all_series: dict[str, dict], jump_symbols: set[str], dates: list[str],
+             bench_close: dict[str, float]) -> dict[str, Any]:
+    """Convenience wrapper over Backtest for in-memory series (jump_symbols is ignored:
+    split/bonus windows are detected per series)."""
+    bt = Backtest(bench_close)
+    for s in all_series.values():
+        bt.add(s)
+    return bt.result()
+
+
+def verdict(stats: dict[str, Any], min_days: int = 30) -> str:
+    """Judged on the regime-on trade simulation, with signal days as the unit of evidence.
+    supported: >= min_days signal days, positive average R, t >= 2 and a positive 10-day excess.
+    weak: positive average R with t >= 1. insufficient: fewer than min_days signal days."""
+    t = stats.get("trade", {}).get("on", {})
+    if (t.get("days") or 0) < min_days:
         return "insufficient"
-    return "supported" if (h.get("excess") or 0) > 0 and h.get("median", 0) > 0 else "not_supported"
+    avg, tval = t.get("avg_r") or 0, t.get("t_days") or 0
+    excess = (stats.get("h10", {}).get("on", {}) or {}).get("excess") or 0
+    if avg > 0 and tval >= 2 and excess > 0:
+        return "supported"
+    if avg > 0 and tval >= 1:
+        return "weak"
+    return "not_supported"

@@ -160,3 +160,5 @@
 .mx-checklist div.no{color:var(--muted2)}
 .mx-checklist div.no i{color:var(--red);font-style:normal}
 @media(max-width:540px){.mx-checklist{grid-template-columns:1fr}}
+.verdict.weak{background:#2e2716;color:#f5d08a}
+.mx-subhead{font-size:13px;margin:18px 0 8px;font-weight:700}
