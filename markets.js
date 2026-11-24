@@ -499,7 +499,16 @@
     if (!reg) return "";
     return `<div class="notice ${reg.on ? "notice-info" : "notice-warning"} regime-banner"><span class="notice-symbol">${reg.on ? "✓" : "!"}</span><div>
       <strong>Market regime ${reg.on ? "favourable" : "unfavourable"}: NIFTY 50 is ${nf(Math.abs(reg.pct_vs_sma50), 1)}% ${reg.on ? "above" : "below"} its 50-session average</strong>
-      <p>${reg.on ? "High-conviction scans are meant for this regime." : "Every long scan lost about 3% over 10 sessions in this regime in stored history. Treat matches as a watchlist, not entries."}</p></div></div>`;
+      <p>${regimeEvidenceText()}</p></div></div>`;
+  }
+  function regimeEvidenceText() {
+    const ev = S.snap?.meta?.conviction?.evidence;
+    if (!ev) return "";
+    const b = ev.baseline?.h10 || {}, st = Object.values(ev.scans || {});
+    const supported = st.filter(x => x.verdict === "supported").map(x => x.name);
+    const avg = h => isNum(h?.mean) ? `${h.mean > 0 ? "+" : ""}${nf(h.mean, 2)}%` : "—";
+    return `Backtest ${esc(ev.period[0])} to ${esc(ev.period[1])}: the average stock returned ${avg(b.on)} over 10 sessions with NIFTY above SMA50 and ${avg(b.off)} below it. `
+      + (supported.length ? `Statistically supported edge: ${supported.map(esc).join(", ")}.` : "No scan shows a statistically supported edge, so treat matches as a watchlist, not entries.");
   }
   function evStat(h) {
     return h && h.n ? `<b>${h.median > 0 ? "+" : ""}${nf(h.median, 2)}%</b> median · ${nf(h.hit, 0)}% hit · ${h.excess > 0 ? "+" : ""}${nf(h.excess, 2)} pp vs avg stock · ${h.n} signals` : "no signals";

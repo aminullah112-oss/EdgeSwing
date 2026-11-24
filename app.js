@@ -255,7 +255,7 @@
     const period=m.setup_evidence_period?`${m.setup_evidence_period[0]} to ${m.setup_evidence_period[1]}`:"stored history";
     el.innerHTML=`<div class="notice ${reg.on?"notice-info":"notice-warning"} regime-banner"><span class="notice-symbol">${reg.on?"✓":"!"}</span><div>
       <strong>Market regime: ${reg.on?"favourable":"unfavourable"} · NIFTY 50 ${fmtNum(reg.nifty,2)} is ${fmtNum(Math.abs(reg.pct_vs_sma50),1)}% ${reg.on?"above":"below"} its 50-session average (${fmtNum(reg.sma50,2)})</strong>
-      <p>${reg.on?"Long setups have historically worked only in this regime.":"In this regime every setup lost about 3% over 10 sessions on average in stored history. Standing aside is the evidence-based choice."} 10-session results by setup, ${escapeHtml(period)}:</p>
+      <p>${Object.values(ev).some(e=>e.verdict==="supported")?"At least one setup shows a statistically supported edge in this regime (see below).":"<b>No setup shows a statistically supported edge</b> in the backtest, so treat signals as research and paper-trading candidates, not trades."} Trade-rule results by setup, ${escapeHtml(period)}:</p>
       <ul class="evidence-list">${line("breakout","Breakout")}${line("relative_strength","Relative strength")}${line("pullback","Pullback")}</ul>
       <p class="evidence-note">Simulated with these proposal rules (stop-entry, 2×ATR stop, 2R target, 10-session limit, 0.25% costs), new signals only. t is measured across signal days. Past results, not a forecast.</p></div></div>`;
   }
