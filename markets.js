@@ -94,7 +94,16 @@
     dh: { label: "VS 52W HIGH", html: r => pct(r.dh, 1), sort: r => r.dh, num: true },
     at: { label: "AVG TURNOVER", html: r => cr(r.at), sort: r => r.at, num: true },
     gap: { label: "GAP", html: r => pct(r.gap), sort: r => r.gap, num: true },
+    mcap: { label: "MKT CAP", html: r => cr(r.mcap), sort: r => r.mcap, num: true },
+    pe: { label: "P/E", html: r => isNum(r.pe) ? nf(r.pe, 1) : (isNum(r.eps) && r.eps <= 0 ? `<span class="down">Loss</span>` : "—"), sort: r => r.pe, num: true },
+    pb: { label: "P/B", html: r => nf(r.pb, 2), sort: r => r.pb, num: true },
+    roe: { label: "ROE", html: r => isNum(r.roe) ? nf(r.roe, 1) + "%" : "—", sort: r => r.roe, num: true },
+    roce: { label: "ROCE", html: r => isNum(r.roce) ? nf(r.roce, 1) + "%" : "—", sort: r => r.roce, num: true },
+    dy: { label: "DIV YIELD", html: r => isNum(r.dy) ? nf(r.dy, 2) + "%" : "—", sort: r => r.dy, num: true },
+    de: { label: "D/E", html: r => nf(r.de, 2), sort: r => r.de, num: true },
   };
+  const hasFund = () => (S.snap?.meta?.fundamentals?.stocks || 0) > 0;
+  const withFund = cols => hasFund() ? [...cols.filter(c => c !== "at"), "mcap", "pe"] : cols;
   const tableState = new WeakMap();
   function renderTable(host, rows, cols, { sort = cols[1], dir = -1, limit = 200, empty = "No stocks match.", after } = {}) {
     const st = tableState.get(host) || { sort, dir };
@@ -120,7 +129,8 @@
   }
   function exportTable(host, name) {
     if (!host._rows?.length) return;
-    const cols = ["s", "n", "ind", "cap", "d", "c", "ch", "r1w", "r1m", "r3m", "r6m", "r1y", "dh", "rsi", "rv", "at", "s50", "s200"];
+    const cols = ["s", "n", "ind", "cap", "d", "c", "ch", "r1w", "r1m", "r3m", "r6m", "r1y", "dh", "rsi", "rv", "at", "s50", "s200",
+      "mcap", "pe", "pb", "dy", "roe", "roce", "de", "fa"];
     const cell = v => { const s = Array.isArray(v) ? v.join(" ") : String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
     const csv = [cols.join(","), ...host._rows.map(r => cols.map(c => cell(r[c])).join(","))].join("\n");
     const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: name });
@@ -334,9 +344,11 @@
             <div class="mx-events">${r.ev.length ? r.ev.map(e => `<span class="mx-chip">${esc(EVENT_LABELS[e] || e)}</span>`).join("") : `<span class="mx-muted">No pattern or crossover events on the latest session.</span>`}</div>
           </section>
         </div>
+        ${fundamentalsPanel(r)}
         <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Industry peers</h2><p>${r.cap ? `${esc(r.ind)} · most traded classified stocks` : "Peers are available for Nifty 100/Midcap/Smallcap/Microcap members only"}</p></div></div>
           <div id="mxPeers"></div></section>`;
-      if (peers.length) renderTable($("#mxPeers"), peers, ["s", "c", "ch", "r1m", "r3m", "r1y", "rsi", "at"], { limit: 12, sort: "at" });
+      if (peers.length) renderTable($("#mxPeers"), peers, hasFund() ? ["s", "c", "ch", "r1m", "r1y", "mcap", "pe", "pb", "roe"] : ["s", "c", "ch", "r1m", "r3m", "r1y", "rsi", "at"],
+        { limit: 12, sort: hasFund() ? "mcap" : "at" });
       else $("#mxPeers").innerHTML = `<div class="empty-state">No classified peers.</div>`;
       $("#mxWatchToggle").addEventListener("click", () => { toggleWatch(r.s); renderStock(); });
       $("#mxPlanTrade").addEventListener("click", () => planTrade(r, atr));
@@ -346,6 +358,30 @@
       loadBars(r).then(bars => { if (S.stock === r.s && $("#mxCandles")) { S.lastBars = bars; drawCandles($("#mxCandles"), bars, $("#mxReadout")); } })
         .catch(err => { const el = $("#mxReadout"); if (el) el.textContent = `Chart data unavailable (${err.message}).`; });
     });
+  }
+  function fundamentalsPanel(r) {
+    const meta = S.snap.meta.fundamentals || {};
+    if (!meta.stocks) {
+      return `<section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Fundamentals</h2><p>P/E, market cap, P/B, dividend yield, ROE, ROCE, debt/equity</p></div></div>
+        <div class="empty-state">No fundamentals loaded yet. Commit a CSV export as <code>data/fundamentals.csv</code>; see “Fundamentals” in the README.</div></section>`;
+    }
+    const any = ["pe", "mcap", "pb", "dy", "roe", "roce", "de", "eps"].some(k => isNum(r[k]));
+    const peers = r.cap ? S.rows.filter(x => x.ind === r.ind && !x.stale && isNum(x.pe)) : [];
+    const indPe = median(peers.map(x => x.pe));
+    const tile = (label, value, note) => `<div><span>${label}</span><strong>${value}</strong><small>${note || "&nbsp;"}</small></div>`;
+    return `<section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Fundamentals</h2>
+        <p>${r.fa ? `Inputs as of ${esc(r.fa)} · P/E, market cap, P/B and yield recomputed at the ${esc(r.d)} close` : "From data/fundamentals.csv"}</p></div></div>
+      ${any ? `<div class="mx-stat-grid mx-fund-grid">
+        ${tile("Market cap", cr(r.mcap), isNum(r.mcap) ? (r.mcap >= 100000 ? "≥ ₹1 lakh cr" : r.mcap >= 20000 ? "₹20k–1 lakh cr" : r.mcap >= 5000 ? "₹5k–20k cr" : "< ₹5k cr") : "")}
+        ${tile("P/E (TTM)", isNum(r.pe) ? nf(r.pe, 1) : isNum(r.eps) && r.eps <= 0 ? `<span class="down">Loss-making</span>` : "—", isNum(indPe) ? `Industry median ${nf(indPe, 1)}` : "")}
+        ${tile("EPS (TTM)", isNum(r.eps) ? "₹" + nf(r.eps) : "—", "Trailing 12 months")}
+        ${tile("P/B", nf(r.pb, 2), "Price / book value")}
+        ${tile("Dividend yield", isNum(r.dy) ? nf(r.dy, 2) + "%" : "—", "Trailing dividend / price")}
+        ${tile("ROE", isNum(r.roe) ? nf(r.roe, 1) + "%" : "—", "As reported in export")}
+        ${tile("ROCE", isNum(r.roce) ? nf(r.roce, 1) + "%" : "—", "As reported in export")}
+        ${tile("Debt / equity", nf(r.de, 2), isNum(r.de) ? (r.de <= 0.1 ? "Nearly debt-free" : r.de <= 1 ? "Moderate leverage" : "High leverage") : "")}
+      </div>` : `<div class="empty-state">${r.fa ? `Blanked: a ≥40% price jump after ${esc(r.fa)} (likely split or bonus) makes the exported EPS and share count stale. Re-export to refresh.` : `${esc(r.s)} is not in data/fundamentals.csv.`}</div>`}
+    </section>`;
   }
   function planTrade(r, atr) {
     const entry = Math.round(r.c * 1.0025 * 20) / 20, stop = Math.round((r.c - 2 * atr) * 20) / 20, target = Math.round((entry + 2 * (entry - stop)) * 20) / 20;
@@ -380,11 +416,18 @@
     { group: "Candlesticks", id: "bearen", name: "Bearish engulfing", desc: "Red body engulfs the prior green body", test: r => r.ev.includes("bear_engulf"), cols: ["s", "c", "ch", "rsi", "rv", "at"], sort: "rv" },
     { group: "Candlesticks", id: "nr7", name: "NR7 volatility contraction", desc: "Narrowest high-low range of the last 7 sessions", test: r => r.ev.includes("nr7"), cols: ["s", "c", "ch", "rsi", "rv", "at"], sort: "at" },
     { group: "Candlesticks", id: "inside", name: "Inside day", desc: "High and low inside the prior session's range", test: r => r.ev.includes("inside"), cols: ["s", "c", "ch", "rsi", "rv", "at"], sort: "at" },
+    { group: "Fundamentals", id: "value", name: "Value with quality", desc: "P/E below 15 and ROE of at least 15%", test: r => r.pe > 0 && r.pe < 15 && r.roe >= 15, cols: ["s", "c", "mcap", "pe", "pb", "roe", "de", "r1y"], sort: "pe", dir: 1 },
+    { group: "Fundamentals", id: "compounder", name: "High ROCE, low debt", desc: "ROCE of at least 20% and debt/equity at most 0.5", test: r => r.roce >= 20 && isNum(r.de) && r.de <= 0.5, cols: ["s", "c", "mcap", "pe", "roce", "roe", "de", "r1y"], sort: "roce" },
+    { group: "Fundamentals", id: "yield", name: "Dividend yield ≥ 3%", desc: "Trailing dividend yield at today's close", test: r => r.dy >= 3, cols: ["s", "c", "mcap", "dy", "pe", "roe", "r1y"], sort: "dy" },
+    { group: "Fundamentals", id: "lowpb", name: "Below 1.5× book, profitable", desc: "P/B under 1.5 with ROE above 12%", test: r => r.pb > 0 && r.pb < 1.5 && r.roe > 12, cols: ["s", "c", "mcap", "pb", "pe", "roe", "r1y"], sort: "pb", dir: 1 },
+    { group: "Fundamentals", id: "trendvalue", name: "Uptrend at a reasonable P/E", desc: "Close above SMA200 with P/E between 0 and 25", test: r => r.c > r.s200 && r.pe > 0 && r.pe <= 25, cols: ["s", "c", "ch", "r3m", "mcap", "pe", "roe"], sort: "r3m" },
   ];
   const FIELDS = [
     ["c", "Close (₹)"], ["ch", "1D change %"], ["r1w", "1W return %"], ["r1m", "1M return %"], ["r3m", "3M return %"], ["r6m", "6M return %"], ["r1y", "1Y return %"],
     ["dh", "% from 52W high"], ["dl", "% above 52W low"], ["rsi", "RSI 14"], ["rv", "Relative volume ×"], ["at", "Avg turnover (₹ cr)"], ["atrp", "ATR % of price"],
     ["gap", "Gap %"], ["macdh", "MACD histogram"], ["s20", "SMA20"], ["s50", "SMA50"], ["s200", "SMA200"], ["e20", "EMA20"],
+    ["mcap", "Market cap (₹ cr)"], ["pe", "P/E (TTM)"], ["eps", "EPS (TTM, ₹)"], ["pb", "P/B"], ["dy", "Dividend yield %"],
+    ["roe", "ROE %"], ["roce", "ROCE %"], ["de", "Debt / equity"],
   ];
   const fieldLabel = k => (FIELDS.find(f => f[0] === k) || [k, k])[1];
   function customTest(scan) {
@@ -395,8 +438,8 @@
     });
   }
   function allScans() {
-    return [...SCANS, ...S.custom.map(c => ({ group: "My scans", id: c.id, name: c.name, desc: c.conds.map(x => `${fieldLabel(x.f)} ${x.op} ${x.vf ? fieldLabel(x.vf) : x.v}`).join(" AND "),
-      test: customTest(c), cols: ["s", "c", "ch", "r1m", "rsi", "rv", "at"], sort: "at", custom: true }))];
+    return [...SCANS.filter(sc => sc.group !== "Fundamentals" || hasFund()), ...S.custom.map(c => ({ group: "My scans", id: c.id, name: c.name, desc: c.conds.map(x => `${fieldLabel(x.f)} ${x.op} ${x.vf ? fieldLabel(x.vf) : x.v}`).join(" AND "),
+      test: customTest(c), cols: withFund(["s", "c", "ch", "r1m", "rsi", "rv", "at"]), sort: hasFund() ? "mcap" : "at", custom: true }))];
   }
   function renderScans() {
     const host = $("#mxScansBody");
@@ -485,17 +528,20 @@
     members.forEach(r => { if (!groups.has(r.ind)) groups.set(r.ind, []); groups.get(r.ind).push(r); });
     const agg = [...groups].map(([ind, rs]) => ({ ind, n: rs.length, ch: median(rs.map(r => r.ch)), r1w: median(rs.map(r => r.r1w)), r1m: median(rs.map(r => r.r1m)),
       r3m: median(rs.map(r => r.r3m)), r1y: median(rs.map(r => r.r1y)), adv: rs.filter(r => r.ch > 0).length, dec: rs.filter(r => r.ch < 0).length,
-      p50: rs.filter(r => isNum(r.s50)).length ? rs.filter(r => r.c > r.s50).length / rs.filter(r => isNum(r.s50)).length * 100 : null }));
-    const keys = [["ind", "INDUSTRY"], ["n", "STOCKS"], ["ch", "1D"], ["r1w", "1W"], ["r1m", "1M"], ["r3m", "3M"], ["r1y", "1Y"], ["p50", "% > SMA50"], ["ad", "ADV / DEC"]];
+      p50: rs.filter(r => isNum(r.s50)).length ? rs.filter(r => r.c > r.s50).length / rs.filter(r => isNum(r.s50)).length * 100 : null,
+      pe: median(rs.map(r => r.pe).filter(x => x > 0)), mcap: rs.some(r => isNum(r.mcap)) ? rs.reduce((t, r) => t + (r.mcap || 0), 0) : null }));
+    const keys = [["ind", "INDUSTRY"], ["n", "STOCKS"], ["ch", "1D"], ["r1w", "1W"], ["r1m", "1M"], ["r3m", "3M"], ["r1y", "1Y"], ["p50", "% > SMA50"], ["ad", "ADV / DEC"],
+      ...(hasFund() ? [["pe", "MEDIAN P/E"], ["mcap", "TOTAL MKT CAP"]] : [])];
     agg.sort((a, b) => { const k = SEC.sort === "ad" ? "adv" : SEC.sort; const x = a[k], y = b[k]; if (x == null) return 1; if (y == null) return -1; return (typeof x === "string" ? x.localeCompare(y) : x - y) * SEC.dir; });
-    const cell = (a, k) => k === "ind" ? `<button class="mx-sym" data-ind="${esc(a.ind)}">${esc(a.ind)}</button>` : k === "n" ? a.n : k === "p50" ? nf(a.p50, 0) + "%" : k === "ad" ? `<span class="up">${a.adv}</span> / <span class="down">${a.dec}</span>` : pct(a[k]);
+    const cell = (a, k) => k === "ind" ? `<button class="mx-sym" data-ind="${esc(a.ind)}">${esc(a.ind)}</button>` : k === "n" ? a.n : k === "p50" ? nf(a.p50, 0) + "%" : k === "ad" ? `<span class="up">${a.adv}</span> / <span class="down">${a.dec}</span>` : k === "pe" ? nf(a.pe, 1) : k === "mcap" ? cr(a.mcap) : pct(a[k]);
     $("#mxSectorTable").innerHTML = `<div class="table-wrap"><table class="mx-table"><thead><tr>${keys.map(([k, l]) => `<th class="${k === "ind" ? "" : "num"}"><button data-ssort="${k}">${l}${SEC.sort === k ? (SEC.dir > 0 ? " ▲" : " ▼") : ""}</button></th>`).join("")}</tr></thead>
       <tbody>${agg.map(a => `<tr class="${a.ind === S.sector ? "mx-selected" : ""}">${keys.map(([k]) => `<td class="${k === "ind" ? "" : "num"}">${cell(a, k)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
     $$("[data-ssort]").forEach(b => b.addEventListener("click", () => { const k = b.dataset.ssort; SEC.dir = SEC.sort === k ? -SEC.dir : (k === "ind" ? 1 : -1); SEC.sort = k; paintSectors(); }));
     $$("[data-ind]").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); S.sector = b.dataset.ind; paintSectors(); }));
     if (S.sector && groups.has(S.sector)) {
       $("#mxSectorDetail").classList.remove("hidden"); $("#mxSectorName").textContent = S.sector;
-      renderTable($("#mxSectorStocks"), groups.get(S.sector), ["s", "c", "ch", "r1w", "r1m", "r3m", "r1y", "rsi", "at"], { sort: "at" });
+      renderTable($("#mxSectorStocks"), groups.get(S.sector), hasFund() ? ["s", "c", "ch", "r1m", "r3m", "r1y", "mcap", "pe", "pb", "roe"] : ["s", "c", "ch", "r1w", "r1m", "r3m", "r1y", "rsi", "at"],
+        { sort: hasFund() ? "mcap" : "at" });
     }
   }
 
@@ -518,7 +564,7 @@
     const host = $("#mxWatchTable");
     const rows = [...S.watch].map(s => S.bySym.get(s)).filter(Boolean);
     const missing = [...S.watch].filter(s => !S.bySym.has(s));
-    renderTable(host, rows, ["s", "c", "ch", "r1w", "r1m", "r3m", "dh", "rsi", "rv"], { sort: "ch", empty: "Your watchlist is empty. Add stocks above or with ☆ on any stock page.", after: h => addRemoveButtons(h, missing) });
+    renderTable(host, rows, ["s", "c", "ch", "r1w", "r1m", "r3m", "dh", "rsi", ...(hasFund() ? ["mcap", "pe"] : ["rv"])], { sort: "ch", empty: "Your watchlist is empty. Add stocks above or with ☆ on any stock page.", after: h => addRemoveButtons(h, missing) });
   }
   function addRemoveButtons(host, missing) {
     $$("tbody tr", host).forEach((tr, i) => { const sym = host._rows[i]?.s; if (!sym) return; const td = document.createElement("td"); td.className = "num"; td.innerHTML = `<button class="icon-button" aria-label="Remove ${esc(sym)}">×</button>`; td.firstChild.addEventListener("click", () => { toggleWatch(sym); paintWatch(); }); tr.append(td); });

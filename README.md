@@ -30,7 +30,22 @@ Five additional views (sidebar → **Market explorer**) turn the same stored NSE
 
 `.github/scripts/build_market_data.py` builds `data/market/` (snapshot, breadth history and one chart file per stock) from `data/history.csv` during the workflow. That output is not committed. Company names, industries and large/mid/small/micro buckets come from NSE's Nifty 100, Midcap 150, Smallcap 250 and Microcap 250 constituent CSVs, cached in `data/index_constituents.csv`; other listings show as "Unclassified". The build step is non-blocking, so a failure never stops the screener from deploying.
 
-Limits: end-of-day data only (no intraday), unadjusted prices (returns and 52-week ranges spanning a flagged ≥40% one-day move are left blank), no fundamentals, shareholding, delivery % or F&O data, and about 13 months of history.
+Limits: end-of-day data only (no intraday), unadjusted prices (returns and 52-week ranges spanning a flagged ≥40% one-day move are left blank), no shareholding, delivery % or F&O data, and about 13 months of history.
+
+### Fundamentals (P/E, market cap, P/B, dividend yield, ROE, ROCE, debt/equity)
+
+Free automated sources are blocked from GitHub's cloud runners: NSE's website returns 403 behind bot protection and Yahoo Finance returns 429. So fundamentals come from a CSV you commit as `data/fundamentals.csv`, refreshed after each quarterly results season.
+
+1. Export a screen covering the stocks you care about from Screener.in or a similar service. Include the NSE code (or ISIN, or company name) plus these columns: current price, P/E, market cap (₹ cr), book value, dividend yield, ROE, ROCE and debt to equity. Save it as CSV (not .xlsx).
+2. Commit it as `data/fundamentals.csv`. The push triggers the workflow, which rebuilds and redeploys the site.
+
+Column names are matched loosely, so "Price to Earning", "P/E" and "PE" all work; see `ALIASES` in `.github/scripts/fundamentals.py`. You can also use the plain format in `data/fundamentals.template.csv` (`symbol, as_of, eps_ttm, shares_cr, book_value, dps, roe, roce, debt_to_equity`). Rows match on NSE code first, then ISIN, then company name, using NSE's equity list cached in `data/nse_equity_list.csv`.
+
+How the numbers stay current: the build stores only slow-moving inputs (trailing EPS = price ÷ P/E, shares = market cap ÷ price, book value and dividend per share) and recomputes P/E, market cap, P/B and dividend yield at every daily close. ROE, ROCE and debt/equity are shown as exported. The export date comes from an `as_of` column, or else the file's last commit date.
+
+Safeguards: loss-making companies show "Loss" instead of a negative P/E. If a stock has a ≥40% one-day price jump after the export date (usually a split or bonus), its EPS and share count are stale, so its fundamentals are blanked with a warning until you re-export. Rows that match no NSE EQ symbol are listed in the build log.
+
+With fundamentals loaded, the explorer adds a Fundamentals panel on each stock page, P/E and market cap columns in peers, sector and watchlist tables, five fundamentals scans (value with quality, high ROCE with low debt, dividend yield ≥ 3%, below 1.5× book, uptrend at a reasonable P/E), sector median P/E and total market cap, and fundamentals fields in the custom scan builder. Without the file, these stay hidden.
 
 Run it locally:
 

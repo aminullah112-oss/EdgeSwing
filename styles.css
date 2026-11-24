@@ -130,3 +130,5 @@
 @media(max-width:1100px){.mx-two-col,.mx-scan-layout{grid-template-columns:1fr}.mx-scan-list{position:static;max-height:none}}
 @media(max-width:850px){.global-search{width:auto;flex:1}.topbar-right .market-pill,.topbar-right .avatar{display:none}.mx-stock-search{min-width:0;width:100%}.mx-chart-wrap{height:300px}}
 @media(max-width:540px){.mx-stat-grid{grid-template-columns:repeat(2,1fr)}.mx-kv{grid-template-columns:1fr}.mx-cond{grid-template-columns:1fr 1fr}.mx-suggest{min-width:0}.mx-stock-head h1{font-size:24px}.mx-panel{padding:14px}}
+.mx-fund-grid{grid-template-columns:repeat(4,1fr)}
+@media(max-width:850px){.mx-fund-grid{grid-template-columns:repeat(2,1fr)}}

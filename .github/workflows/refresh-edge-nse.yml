@@ -10,6 +10,9 @@ on:
       - 'styles.css'
       - 'README.md'
       - '.github/scripts/update_nse_data.py'
+      - '.github/scripts/build_market_data.py'
+      - '.github/scripts/fundamentals.py'
+      - 'data/fundamentals.csv'
       - '.github/workflows/refresh-edge-nse.yml'
       - 'tests/**'
   schedule:
@@ -70,7 +73,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/history.csv data/latest_screen.json data/last_run.json data/etf_symbols.csv
-          if [ -f data/index_constituents.csv ]; then git add data/index_constituents.csv; fi
+          for f in data/index_constituents.csv data/nse_equity_list.csv; do if [ -f "$f" ]; then git add "$f"; fi; done
           if git diff --cached --quiet; then
             echo "No changes in history or screen output."
           else
