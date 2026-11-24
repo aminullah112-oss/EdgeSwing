@@ -40,9 +40,6 @@ jobs:
   refresh-and-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Check out default branch
         uses: actions/checkout@v4
@@ -104,6 +101,17 @@ jobs:
         with:
           path: _site
 
+  # Deploy in a separate job (GitHub's Pages pattern). Deploying in the same job as the
+  # upload intermittently failed with "No artifacts named github-pages were found" because
+  # the artifact was not yet listed; a dependent job starts only after the upload is final.
+  deploy:
+    needs: refresh-and-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy refreshed website to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
