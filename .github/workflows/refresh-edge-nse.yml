@@ -6,6 +6,7 @@ on:
     paths:
       - 'index.html'
       - 'app.js'
+      - 'markets.js'
       - 'styles.css'
       - 'README.md'
       - '.github/scripts/update_nse_data.py'
@@ -55,12 +56,21 @@ jobs:
           FORCE_BACKFILL: ${{ inputs.force_backfill || 'false' }}
         run: python .github/scripts/update_nse_data.py
 
+      - name: Run offline tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build market explorer dataset (snapshot, breadth, per-stock charts)
+        # Non-blocking: a failure here must not stop the screener from deploying.
+        continue-on-error: true
+        run: python .github/scripts/build_market_data.py
+
       - name: Commit latest history and scan results
         if: always() && !cancelled()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/history.csv data/latest_screen.json data/last_run.json data/etf_symbols.csv
+          if [ -f data/index_constituents.csv ]; then git add data/index_constituents.csv; fi
           if git diff --cached --quiet; then
             echo "No changes in history or screen output."
           else
@@ -75,9 +85,10 @@ jobs:
         run: |
           rm -rf _site
           mkdir -p _site/assets _site/data
-          cp index.html app.js styles.css .nojekyll _site/
+          cp index.html app.js markets.js styles.css .nojekyll _site/
           cp -R assets/. _site/assets/
           cp data/latest_screen.json _site/data/latest_screen.json
+          if [ -f data/market/snapshot.json ]; then cp -R data/market _site/data/market; else echo "::warning::Market explorer dataset missing; explorer views will show a notice."; fi
 
       - name: Upload website artifact
         uses: actions/upload-pages-artifact@v4

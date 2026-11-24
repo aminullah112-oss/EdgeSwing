@@ -24,6 +24,14 @@
         <button class="nav-item" data-view="ledger"><span class="nav-icon">☷</span> Proposal tracker</button>
         <button class="nav-item" data-view="data"><span class="nav-icon">⇧</span> Data & research</button>
       </nav>
+      <div class="workspace-label nav-section-label">MARKET EXPLORER</div>
+      <nav class="nav-list" aria-label="Market explorer">
+        <button class="nav-item" data-view="markets"><span class="nav-icon">◔</span> Markets</button>
+        <button class="nav-item" data-view="stock"><span class="nav-icon">◫</span> Stock analysis</button>
+        <button class="nav-item" data-view="scans"><span class="nav-icon">≡</span> Scans</button>
+        <button class="nav-item" data-view="sectors"><span class="nav-icon">▤</span> Sectors</button>
+        <button class="nav-item" data-view="watchlist"><span class="nav-icon">☆</span> Watchlist <span class="nav-count" id="watchNavCount">0</span></button>
+      </nav>
       <div class="sidebar-bottom">
         <div class="mode-card">
           <span class="mode-dot"></span>
@@ -39,6 +47,7 @@
         <button class="mobile-menu" id="mobileMenu" aria-label="Toggle menu">☰</button>
         <div class="breadcrumb"><span>Workspace</span><b>/</b><strong id="pageCrumb">Overview</strong></div>
         <div class="topbar-right">
+          <div class="global-search"><input id="globalSearch" type="search" placeholder="Search NSE stocks…" aria-label="Search NSE stocks by symbol or company name" autocomplete="off"></div>
           <span class="market-pill"><i></i> NSE CASH · RESEARCH</span>
           <button class="icon-button" id="helpBtn" aria-label="Help">?</button>
           <div class="avatar">EN</div>
@@ -143,11 +152,41 @@
           <section class="panel research-panel"><div class="panel-heading"><div><h2>Research protocol</h2><p>Required before interpreting any results</p></div><span class="mini-label">VALIDATION</span></div><div class="protocol-grid"><div><span class="protocol-num">01</span><h3>Reproduce control</h3><p>Reproduce the existing EDGE strategy and preserve its exact universe and assumptions.</p></div><div><span class="protocol-num">02</span><h3>Walk-forward test</h3><p>Use chronological splits and keep a final holdout untouched until rules are frozen.</p></div><div><span class="protocol-num">03</span><h3>Model real costs</h3><p>Include taxes, charges, spread, slippage, gaps and plausible fills.</p></div><div><span class="protocol-num">04</span><h3>Paper-trade</h3><p>Reconcile timestamped signals and simulated fills with executable prices.</p></div></div><div class="gate-warning">This static website does not reproduce the Python backtest engine. Use the separate Python project for full research simulations.</div></section>
           <footer class="page-footer"><span>EDGE NSE <b>·</b> Data-first research</span><span>All imported files are processed in your browser.</span></footer>
         </section>
+
+        <section class="view" id="view-markets">
+          <div class="page-heading"><div><div class="eyebrow">MARKET PULSE · NSE CASH · EOD <span class="mx-asof"></span></div><h1>Markets<span class="heading-period">.</span></h1><p class="subheading">Breadth, NIFTY 50 and the day's movers across every NSE EQ-series stock.</p></div></div>
+          <div id="mxMarketsBody"></div>
+          <footer class="page-footer"><span>EDGE NSE <b>·</b> Market explorer</span><span>Source: NSE end-of-day bhavcopy · prices unadjusted</span></footer>
+        </section>
+
+        <section class="view" id="view-stock">
+          <div class="page-heading"><div><div class="eyebrow">STOCK ANALYSIS · EOD <span class="mx-asof"></span></div><h1>Stock analysis<span class="heading-period">.</span></h1><p class="subheading">Chart, returns, technicals and industry peers for any NSE stock.</p></div>
+            <div class="heading-actions"><div class="input-field mx-stock-search"><input id="mxStockSearch" type="search" placeholder="Symbol or company name" aria-label="Find a stock" autocomplete="off"></div></div></div>
+          <div id="mxStockBody"></div>
+          <footer class="page-footer"><span>EDGE NSE <b>·</b> Descriptive analytics only</span><span>Not investment advice · no orders are placed</span></footer>
+        </section>
+
+        <section class="view" id="view-scans">
+          <div class="page-heading"><div><div class="eyebrow">SCAN LIBRARY · EOD <span class="mx-asof"></span></div><h1>Scans<span class="heading-period">.</span></h1><p class="subheading">Prebuilt technical scans over the full NSE universe, plus your own condition-based scans.</p></div></div>
+          <div id="mxScansBody"></div>
+          <footer class="page-footer"><span>EDGE NSE <b>·</b> Scans describe conditions, not outcomes</span><span>Run walk-forward tests before trusting any scan</span></footer>
+        </section>
+
+        <section class="view" id="view-sectors">
+          <div class="page-heading"><div><div class="eyebrow">INDUSTRY ROTATION · EOD <span class="mx-asof"></span></div><h1>Sectors<span class="heading-period">.</span></h1><p class="subheading">Median returns and participation by NSE industry classification.</p></div></div>
+          <div id="mxSectorsBody"></div>
+        </section>
+
+        <section class="view" id="view-watchlist">
+          <div class="page-heading"><div><div class="eyebrow">YOUR STOCKS · EOD <span class="mx-asof"></span></div><h1>Watchlist<span class="heading-period">.</span></h1><p class="subheading">Track the stocks you follow on every end-of-day refresh.</p></div></div>
+          <div id="mxWatchBody"></div>
+        </section>
       </div>
     </main>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <dialog id="helpDialog"><div class="dialog-head"><div><span class="eyebrow">QUICK GUIDE</span><h2>Using EDGE NSE</h2></div><button class="icon-button" id="closeHelp" aria-label="Close">×</button></div><p>1. Load historical OHLCV data from a licensed source.</p><p>2. Review structural validation warnings and scan candidate setups.</p><p>3. Use the risk calculator to plan a trade, then log it as paper-only.</p><p>4. Validate strategy performance in the separate Python backtesting project.</p><div class="notice notice-warning"><span class="notice-symbol">!</span><div><strong>No live data or order execution</strong><p>Scores are heuristic. No recommendation or profit guarantee is made.</p></div></div><button class="button button-primary full-width" id="closeHelpBottom">Got it</button></dialog>
   <script src="app.js"></script>
+  <script src="markets.js"></script>
 </body>
 </html>

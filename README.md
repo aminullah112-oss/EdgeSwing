@@ -18,6 +18,29 @@ A static GitHub Pages front end plus a scheduled Python ingestion and screening 
 8. **Screening:** computes SMA20/50/200, EMA20, Wilder RSI(14), simple-average ATR(14), 20-session volume/turnover averages and 60-session return. It applies the rules below and publishes `data/latest_screen.json`.
 9. **Website:** the Overview and Stock scanner fetch the published JSON from the same GitHub Pages origin. The Data & research panel shows the history length, benchmark date and warnings. Manual CSV uploads are still available.
 
+## Market explorer
+
+Five additional views (sidebar → **Market explorer**) turn the same stored NSE history into a general stock-analysis tool, without any paid data subscription:
+
+- **Markets:** NIFTY 50, advance/decline, % of stocks above SMA50/SMA200, new 52-week highs/lows, a breadth chart, and movers (gainers, losers, volume shockers, 52W highs/lows, gap ups) filterable by size bucket and liquidity.
+- **Stock analysis:** search any NSE EQ stock (topbar search or `#stock/SYMBOL` links). Daily candlestick chart with SMA20/50/200, 1D–1Y returns vs NIFTY 50, 52-week range, RSI, MACD, ATR, volume, event flags, industry peers, and a one-click hand-off to the risk calculator (entry = close + 0.25%, stop = close − 2×ATR, target = 2R).
+- **Scans:** 24 prebuilt scans (52W high/low, 20-session breakout on volume, golden/death cross, MACD crossovers, RSI zones, volume shockers, gaps, engulfing, NR7, inside day, relative strength vs NIFTY) plus a custom condition builder saved in the browser.
+- **Sectors:** median 1D/1W/1M/3M/1Y returns, % above SMA50 and advance/decline per NSE industry.
+- **Watchlist:** browser-local list with CSV export.
+
+`.github/scripts/build_market_data.py` builds `data/market/` (snapshot, breadth history and one chart file per stock) from `data/history.csv` during the workflow. That output is not committed. Company names, industries and large/mid/small/micro buckets come from NSE's Nifty 100, Midcap 150, Smallcap 250 and Microcap 250 constituent CSVs, cached in `data/index_constituents.csv`; other listings show as "Unclassified". The build step is non-blocking, so a failure never stops the screener from deploying.
+
+Limits: end-of-day data only (no intraday), unadjusted prices (returns and 52-week ranges spanning a flagged ≥40% one-day move are left blank), no fundamentals, shareholding, delivery % or F&O data, and about 13 months of history.
+
+Run it locally:
+
+```bash
+python .github/scripts/build_market_data.py
+python -m http.server 8000
+```
+
+Then open http://localhost:8000. The page must be served over HTTP; opening `index.html` as a file blocks the data fetches.
+
 ## Setup and deployment
 
 1. For a new repository, use the full project package and upload its contents to the root. For the current live EdgeSwing repository, use the selective upgrade archive: extract at the root and upload only the files included in that archive; do not replace the existing `data/` files.

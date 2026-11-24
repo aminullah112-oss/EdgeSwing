@@ -1,0 +1,550 @@
+/* EDGE NSE market explorer: markets pulse, stock pages, scans, sectors, watchlist.
+ *
+ * Reads the static files built by .github/scripts/build_market_data.py:
+ *   data/market/snapshot.json   one row per stock (columns + rows arrays)
+ *   data/market/breadth.json    per-session breadth history
+ *   data/market/stocks/<key>.json  OHLCV bars for one symbol (fetched on demand)
+ * No third-party scripts and no external market-data calls from the browser.
+ * Navigation reuses app.js: views are opened by clicking the matching .nav-item.
+ */
+(() => {
+  "use strict";
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const isNum = x => typeof x === "number" && Number.isFinite(x);
+  const nf = (x, d = 2) => isNum(x) ? x.toLocaleString("en-IN", { maximumFractionDigits: d, minimumFractionDigits: d }) : "—";
+  const pct = (x, d = 2) => isNum(x) ? `<span class="${x > 0 ? "up" : x < 0 ? "down" : ""}">${x > 0 ? "+" : ""}${nf(x, d)}%</span>` : "—";
+  const cr = x => isNum(x) ? `₹${nf(x, x >= 100 ? 0 : x >= 10 ? 1 : 2)} cr` : "—";
+  const median = arr => { const a = arr.filter(isNum).sort((x, y) => x - y); if (!a.length) return null; const m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; };
+  const BASE = "data/market/";
+  const LIQUID_CR = 1; // matches the screener's ₹1 crore 20-session average turnover floor
+  const WATCH_KEY = "edgeNseWatchlistV1";
+  const CUSTOM_KEY = "edgeNseCustomScansV1";
+  const store = {
+    get(k, fallback) { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? fallback; } catch { return fallback; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode: keep in memory only */ } },
+  };
+
+  const CAP_LABELS = { large: "Large cap", mid: "Mid cap", small: "Small cap", micro: "Micro cap", "": "Unclassified" };
+  const EVENT_LABELS = {
+    h52: "New 52-week high", l52: "New 52-week low", b20: "Closed above 20-session high", d20: "Closed below 20-session low",
+    gx: "Golden cross (SMA50 > SMA200, last 5 sessions)", dx: "Death cross (SMA50 < SMA200, last 5 sessions)",
+    macd_up: "MACD crossed above signal", macd_dn: "MACD crossed below signal", e20_up: "Closed back above EMA20",
+    e20_dn: "Closed below EMA20", vol3: "Volume ≥ 3× 20-session average", nr7: "NR7: narrowest range in 7 sessions",
+    inside: "Inside day", bull_engulf: "Bullish engulfing candle", bear_engulf: "Bearish engulfing candle",
+    gap_up: "Gap up ≥ 2% above prior high", gap_dn: "Gap down ≥ 2% below prior low",
+  };
+
+  const S = { snap: null, rows: [], bySym: new Map(), breadth: [], bench: null, loading: null, error: null,
+    watch: new Set(store.get(WATCH_KEY, [])), custom: store.get(CUSTOM_KEY, []),
+    stock: null, bars: new Map(), range: 250, overlays: { s20: true, s50: true, s200: true },
+    moversTab: "gainers", scanId: "h52", sector: null };
+
+  // ------------------------------------------------------------------ data
+  function load() {
+    if (S.loading) return S.loading;
+    S.loading = Promise.all([
+      fetch(BASE + "snapshot.json", { cache: "no-cache" }).then(r => { if (!r.ok) throw new Error(`snapshot.json HTTP ${r.status}`); return r.json(); }),
+      fetch(BASE + "breadth.json", { cache: "no-cache" }).then(r => r.ok ? r.json() : { rows: [] }).catch(() => ({ rows: [] })),
+    ]).then(([snap, breadth]) => {
+      S.snap = snap;
+      S.rows = snap.rows.map(r => Object.fromEntries(snap.columns.map((c, i) => [c, r[i]])));
+      S.rows.forEach(r => S.bySym.set(r.s, r));
+      S.breadth = breadth.rows || [];
+      S.bench = snap.benchmark;
+      $$(".mx-asof").forEach(el => el.textContent = snap.meta.latest_market_date);
+      return S;
+    }).catch(err => { S.error = err; throw err; });
+    return S.loading;
+  }
+
+  function loadBars(row) {
+    if (S.bars.has(row.key)) return Promise.resolve(S.bars.get(row.key));
+    return fetch(`${BASE}stocks/${encodeURIComponent(row.key)}.json`).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(j => { S.bars.set(row.key, j.bars); return j.bars; });
+  }
+
+  // Universe filter shared by movers, scans and sectors.
+  function universe(rows, { cap = "all", liquid = true } = {}) {
+    return rows.filter(r => !r.stale && (!liquid || (isNum(r.at) && r.at >= LIQUID_CR)) &&
+      (cap === "all" || (cap === "n50" ? r.n50 : cap === "none" ? !r.cap : r.cap === cap)));
+  }
+  function universeControls(prefix) {
+    return `<div class="filter-field"><label for="${prefix}Cap">UNIVERSE</label><select id="${prefix}Cap">
+      <option value="all">All NSE EQ stocks</option><option value="n50">NIFTY 50</option><option value="large">Large cap (Nifty 100)</option>
+      <option value="mid">Mid cap (Midcap 150)</option><option value="small">Small cap (Smallcap 250)</option>
+      <option value="micro">Micro cap (Microcap 250)</option><option value="none">Unclassified listings</option></select></div>
+      <label class="mx-check"><input type="checkbox" id="${prefix}Liquid" checked> Liquid only (avg turnover ≥ ₹${LIQUID_CR} cr)</label>`;
+  }
+  const readUniverse = prefix => ({ cap: $(`#${prefix}Cap`)?.value || "all", liquid: $(`#${prefix}Liquid`)?.checked ?? true });
+
+  // ------------------------------------------------------------------ tables
+  const COLS = {
+    s: { label: "SYMBOL", html: r => `<button class="mx-sym" data-sym="${esc(r.s)}">${esc(r.s)}</button>${r.n ? `<small>${esc(r.n)}</small>` : ""}`, sort: r => r.s, text: r => r.s },
+    ind: { label: "INDUSTRY", html: r => esc(r.ind), sort: r => r.ind, text: r => r.ind },
+    c: { label: "CLOSE", html: r => nf(r.c), sort: r => r.c, num: true },
+    ch: { label: "1D", html: r => pct(r.ch), sort: r => r.ch, num: true },
+    r1w: { label: "1W", html: r => pct(r.r1w), sort: r => r.r1w, num: true },
+    r1m: { label: "1M", html: r => pct(r.r1m), sort: r => r.r1m, num: true },
+    r3m: { label: "3M", html: r => pct(r.r3m), sort: r => r.r3m, num: true },
+    r1y: { label: "1Y", html: r => pct(r.r1y), sort: r => r.r1y, num: true },
+    rsi: { label: "RSI 14", html: r => nf(r.rsi, 1), sort: r => r.rsi, num: true },
+    rv: { label: "REL VOL", html: r => isNum(r.rv) ? nf(r.rv) + "×" : "—", sort: r => r.rv, num: true },
+    dh: { label: "VS 52W HIGH", html: r => pct(r.dh, 1), sort: r => r.dh, num: true },
+    at: { label: "AVG TURNOVER", html: r => cr(r.at), sort: r => r.at, num: true },
+    gap: { label: "GAP", html: r => pct(r.gap), sort: r => r.gap, num: true },
+  };
+  const tableState = new WeakMap();
+  function renderTable(host, rows, cols, { sort = cols[1], dir = -1, limit = 200, empty = "No stocks match.", after } = {}) {
+    const st = tableState.get(host) || { sort, dir };
+    tableState.set(host, st);
+    const def = COLS[st.sort];
+    const sorted = [...rows].sort((a, b) => {
+      const x = def.sort(a), y = def.sort(b);
+      if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1;
+      return (typeof x === "string" ? x.localeCompare(y) : x - y) * st.dir;
+    });
+    host._rows = sorted; host._cols = cols;
+    if (!rows.length) { host.innerHTML = `<div class="empty-state">${esc(empty)}</div>`; after?.(host); return; }
+    const shown = sorted.slice(0, limit);
+    host.innerHTML = `<div class="table-wrap"><table class="mx-table"><thead><tr>${cols.map(c =>
+      `<th class="${COLS[c].num ? "num" : ""}"><button data-sort="${c}">${COLS[c].label}${st.sort === c ? (st.dir > 0 ? " ▲" : " ▼") : ""}</button></th>`).join("")}</tr></thead>
+      <tbody>${shown.map(r => `<tr>${cols.map(c => `<td class="${COLS[c].num ? "num" : ""}">${COLS[c].html(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+      <div class="mx-table-foot">${rows.length > limit ? `Showing top ${limit} of ${rows.length}` : `${rows.length} stock${rows.length === 1 ? "" : "s"}`}</div>`;
+    $$("[data-sort]", host).forEach(b => b.addEventListener("click", () => {
+      const k = b.dataset.sort; st.dir = st.sort === k ? -st.dir : (COLS[k].num ? -1 : 1); st.sort = k;
+      renderTable(host, rows, cols, { limit, empty, after });
+    }));
+    after?.(host);
+  }
+  function exportTable(host, name) {
+    if (!host._rows?.length) return;
+    const cols = ["s", "n", "ind", "cap", "d", "c", "ch", "r1w", "r1m", "r3m", "r6m", "r1y", "dh", "rsi", "rv", "at", "s50", "s200"];
+    const cell = v => { const s = Array.isArray(v) ? v.join(" ") : String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const csv = [cols.join(","), ...host._rows.map(r => cols.map(c => cell(r[c])).join(","))].join("\n");
+    const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: name });
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // ------------------------------------------------------------------ charts
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function setupCanvas(canvas) {
+    const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    const ctx = canvas.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w, h };
+  }
+  function smaArr(vals, n) { const out = Array(vals.length).fill(null); let t = 0; vals.forEach((v, i) => { t += v; if (i >= n) t -= vals[i - n]; if (i >= n - 1) out[i] = t / n; }); return out; }
+
+  function drawCandles(canvas, allBars, readout) {
+    const full = allBars.map(b => ({ d: b[0], o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
+    const closes = full.map(b => b.c);
+    const ma = { s20: smaArr(closes, 20), s50: smaArr(closes, 50), s200: smaArr(closes, 200) };
+    const start = Math.max(0, full.length - S.range);
+    const bars = full.slice(start);
+    const { ctx, w, h } = setupCanvas(canvas);
+    const padL = 8, padR = 62, padT = 10, volH = Math.round(h * 0.2), priceH = h - volH - padT - 24;
+    const n = bars.length, step = (w - padL - padR) / Math.max(n, 1), bw = Math.max(1, Math.min(9, step * 0.7));
+    let lo = Infinity, hi = -Infinity, vmax = 0;
+    bars.forEach((b, i) => { lo = Math.min(lo, b.l); hi = Math.max(hi, b.h); vmax = Math.max(vmax, b.v);
+      Object.keys(ma).forEach(k => { const v = ma[k][start + i]; if (S.overlays[k] && v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } }); });
+    const padP = (hi - lo) * 0.06 || 1; lo -= padP; hi += padP;
+    const y = p => padT + (hi - p) / (hi - lo) * priceH, x = i => padL + step * i + step / 2;
+    const up = css("--green") || "#47e0ac", down = css("--red") || "#ff7e8d", grid = "#25334c", muted = css("--muted2") || "#6f7f9b";
+    const draw = hover => {
+      ctx.clearRect(0, 0, w, h);
+      ctx.font = "10px Inter, system-ui, sans-serif"; ctx.textBaseline = "middle";
+      for (let k = 0; k <= 4; k++) { const p = lo + (hi - lo) * k / 4, yy = y(p); ctx.strokeStyle = grid; ctx.globalAlpha = .5; ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(w - padR, yy); ctx.stroke(); ctx.globalAlpha = 1; ctx.fillStyle = muted; ctx.fillText(nf(p, p > 1000 ? 0 : 2), w - padR + 6, yy); }
+      const months = new Set();
+      bars.forEach((b, i) => { const m = b.d.slice(0, 7); if (!months.has(m) && (i === 0 || bars[i - 1].d.slice(0, 7) !== m)) { months.add(m); if (i > 0 && (n < 140 || +b.d.slice(5, 7) % 2 === 1)) { ctx.fillStyle = muted; ctx.fillText(new Date(b.d + "T00:00").toLocaleDateString("en-IN", { month: "short", year: "2-digit" }), x(i) - 14, h - 9); } } });
+      const vy0 = h - 20;
+      bars.forEach((b, i) => {
+        const color = b.c >= b.o ? up : down;
+        ctx.fillStyle = color; ctx.globalAlpha = .35; const vh = vmax ? b.v / vmax * (volH - 6) : 0; ctx.fillRect(x(i) - bw / 2, vy0 - vh, bw, vh); ctx.globalAlpha = 1;
+        ctx.strokeStyle = color; ctx.beginPath(); ctx.moveTo(x(i), y(b.h)); ctx.lineTo(x(i), y(b.l)); ctx.stroke();
+        const top = y(Math.max(b.o, b.c)), bot = y(Math.min(b.o, b.c)); ctx.fillRect(x(i) - bw / 2, top, bw, Math.max(1, bot - top));
+      });
+      const maColors = { s20: css("--amber") || "#f5bd68", s50: css("--blue") || "#7aa7ff", s200: css("--violet") || "#b7a2ff" };
+      Object.keys(ma).forEach(k => { if (!S.overlays[k]) return; ctx.strokeStyle = maColors[k]; ctx.lineWidth = 1.4; ctx.beginPath(); let on = false;
+        bars.forEach((_, i) => { const v = ma[k][start + i]; if (v == null) { on = false; return; } on ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v)); on = true; }); ctx.stroke(); ctx.lineWidth = 1; });
+      const i = hover ?? n - 1, b = bars[i];
+      if (hover != null && b) { ctx.strokeStyle = muted; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(x(i), padT); ctx.lineTo(x(i), vy0); ctx.stroke(); ctx.setLineDash([]); }
+      if (b && readout) {
+        const prev = full[start + i - 1]?.c, chg = prev ? (b.c / prev - 1) * 100 : null;
+        readout.innerHTML = `<b>${b.d}</b> O ${nf(b.o)} H ${nf(b.h)} L ${nf(b.l)} C ${nf(b.c)} ${pct(chg)} · Vol ${b.v.toLocaleString("en-IN")}` +
+          Object.keys(ma).filter(k => S.overlays[k] && ma[k][start + i] != null).map(k => ` · <i style="color:${maColors[k]}">${k.toUpperCase().replace("S", "SMA")} ${nf(ma[k][start + i])}</i>`).join("");
+      }
+    };
+    draw(null);
+    canvas.onmousemove = e => { const r = canvas.getBoundingClientRect(); const i = Math.floor((e.clientX - r.left - padL) / step); draw(Math.max(0, Math.min(n - 1, i))); };
+    canvas.onmouseleave = () => draw(null);
+    canvas.ontouchmove = e => { const t = e.touches[0]; if (!t) return; const r = canvas.getBoundingClientRect(); draw(Math.max(0, Math.min(n - 1, Math.floor((t.clientX - r.left - padL) / step)))); };
+  }
+
+  function drawBreadth(canvas) {
+    const rows = S.breadth.filter(r => r.p50 != null);
+    if (!rows.length) return;
+    const { ctx, w, h } = setupCanvas(canvas);
+    const padL = 34, padR = 58, padT = 10, padB = 22, n = rows.length;
+    const x = i => padL + (w - padL - padR) * (n === 1 ? 0.5 : i / (n - 1));
+    const yP = p => padT + (100 - p) / 100 * (h - padT - padB);
+    const nv = rows.map(r => r.nifty).filter(isNum); const nlo = Math.min(...nv), nhi = Math.max(...nv);
+    const yN = v => padT + (nhi - v) / ((nhi - nlo) || 1) * (h - padT - padB);
+    const muted = css("--muted2") || "#6f7f9b";
+    ctx.font = "10px Inter, system-ui, sans-serif"; ctx.textBaseline = "middle";
+    [0, 25, 50, 75, 100].forEach(p => { ctx.strokeStyle = "#25334c"; ctx.globalAlpha = .5; ctx.beginPath(); ctx.moveTo(padL, yP(p)); ctx.lineTo(w - padR, yP(p)); ctx.stroke(); ctx.globalAlpha = 1; ctx.fillStyle = muted; ctx.fillText(p + "%", 4, yP(p)); });
+    if (nv.length) [nlo, (nlo + nhi) / 2, nhi].forEach(v => { ctx.fillStyle = muted; ctx.fillText(nf(v, 0), w - padR + 6, yN(v)); });
+    const line = (key, color, yf, dash) => { ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.setLineDash(dash || []); ctx.beginPath(); let on = false;
+      rows.forEach((r, i) => { if (!isNum(r[key])) { on = false; return; } on ? ctx.lineTo(x(i), yf(r[key])) : ctx.moveTo(x(i), yf(r[key])); on = true; }); ctx.stroke(); ctx.setLineDash([]); ctx.lineWidth = 1; };
+    line("nifty", "#91a0ba", yN, [4, 3]); line("p50", css("--blue") || "#7aa7ff", yP); line("p200", css("--green") || "#47e0ac", yP);
+    let lastMonth = "";
+    rows.forEach((r, i) => { const m = r.d.slice(0, 7); if (m !== lastMonth) { lastMonth = m; if (i > 0 && +r.d.slice(5, 7) % 2 === 1) { ctx.fillStyle = muted; ctx.fillText(new Date(r.d + "T00:00").toLocaleDateString("en-IN", { month: "short", year: "2-digit" }), x(i) - 14, h - 9); } } });
+  }
+
+  // ------------------------------------------------------------------ navigation & search
+  function openView(view) { $(`.nav-item[data-view="${view}"]`)?.click(); }
+  function openStock(sym) {
+    if (location.hash !== `#stock/${encodeURIComponent(sym)}`) history.pushState(null, "", `#stock/${encodeURIComponent(sym)}`);
+    S.stock = sym; openView("stock");
+  }
+  document.addEventListener("click", e => { const b = e.target.closest(".mx-sym[data-sym]"); if (b) { e.preventDefault(); openStock(b.dataset.sym); } });
+  window.addEventListener("popstate", routeFromHash);
+  function routeFromHash() { const m = location.hash.match(/^#stock\/(.+)$/); if (m) { S.stock = decodeURIComponent(m[1]); openView("stock"); } }
+
+  function searchRows(q, limit = 10) {
+    q = q.trim().toUpperCase(); if (!q) return [];
+    const starts = [], contains = [];
+    for (const r of S.rows) { if (r.s.startsWith(q)) starts.push(r); else if (r.s.includes(q) || r.n.toUpperCase().includes(q)) contains.push(r); }
+    const rank = a => (a.stale ? 1e9 : 0) - (a.at || 0);
+    return [...starts.sort((a, b) => rank(a) - rank(b) || a.s.length - b.s.length), ...contains.sort((a, b) => rank(a) - rank(b))].slice(0, limit);
+  }
+  function attachSearch(input, onPick) {
+    const box = document.createElement("div"); box.className = "mx-suggest hidden"; input.parentElement.classList.add("mx-search-wrap"); input.after(box);
+    let items = [], active = 0;
+    const paint = () => { box.innerHTML = items.map((r, i) => `<button type="button" class="${i === active ? "active" : ""}" data-i="${i}"><b>${esc(r.s)}</b><span>${esc(r.n || r.ind)}</span><em>${nf(r.c)} ${pct(r.ch)}</em></button>`).join(""); box.classList.toggle("hidden", !items.length); };
+    input.addEventListener("input", () => load().then(() => { items = searchRows(input.value); active = 0; paint(); }).catch(() => {}));
+    input.addEventListener("keydown", e => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); active = (active + (e.key === "ArrowDown" ? 1 : -1) + items.length) % Math.max(items.length, 1); paint(); }
+      else if (e.key === "Enter" && items[active]) { e.preventDefault(); pick(items[active]); }
+      else if (e.key === "Escape") { items = []; paint(); }
+    });
+    box.addEventListener("mousedown", e => { const b = e.target.closest("[data-i]"); if (b) { e.preventDefault(); pick(items[+b.dataset.i]); } });
+    input.addEventListener("blur", () => setTimeout(() => { items = []; paint(); }, 150));
+    function pick(r) { input.value = ""; items = []; paint(); input.blur(); onPick(r.s); }
+  }
+
+  function withData(host, fn) {
+    if (S.snap) return fn();
+    host.innerHTML = `<div class="empty-state">Loading market data…</div>`;
+    load().then(fn).catch(err => {
+      host.innerHTML = `<div class="notice notice-warning"><span class="notice-symbol">!</span><div><strong>Market dataset not published yet</strong><p>Could not load <code>${BASE}snapshot.json</code> (${esc(err.message)}). It is built by the GitHub Actions workflow from data/history.csv. Locally, run <code>python .github/scripts/build_market_data.py</code> and serve the folder over HTTP.</p></div></div>`;
+    });
+  }
+
+  // ------------------------------------------------------------------ Markets view
+  function renderMarkets() {
+    const host = $("#mxMarketsBody");
+    withData(host, () => {
+      const b = S.bench, last = S.breadth[S.breadth.length - 1] || {}, adr = last.dec ? last.adv / last.dec : null;
+      host.innerHTML = `
+        <div class="metric-grid">
+          <article class="metric-card"><div class="metric-top"><span>NIFTY 50</span><span class="metric-icon green">◆</span></div><div class="metric-value">${b ? nf(b.c) : "—"}</div><div class="metric-foot"><span class="metric-muted">1D ${pct(b?.ch)} · 1M ${pct(b?.r1m)}</span><span class="metric-tag neutral">${b && b.c > b.s200 ? "Above" : "Below"} SMA200</span></div></article>
+          <article class="metric-card"><div class="metric-top"><span>ADVANCE / DECLINE</span><span class="metric-icon blue">⇅</span></div><div class="metric-value">${last.adv ?? "—"}<small class="mx-slash">/</small>${last.dec ?? "—"}</div><div class="metric-foot"><span class="metric-muted">Ratio ${nf(adr)} · unchanged ${last.unch ?? "—"}</span><span class="metric-tag ${adr >= 1 ? "positive" : "neutral"}">${adr >= 1 ? "Broad gains" : "Broad losses"}</span></div></article>
+          <article class="metric-card"><div class="metric-top"><span>ABOVE 200-SESSION SMA</span><span class="metric-icon violet">▲</span></div><div class="metric-value">${nf(last.p200, 1)}%</div><div class="metric-foot"><span class="metric-muted">Above 50-SMA: ${nf(last.p50, 1)}%</span><span class="metric-tag neutral">Participation</span></div></article>
+          <article class="metric-card"><div class="metric-top"><span>NEW 52W HIGHS / LOWS</span><span class="metric-icon amber">⚑</span></div><div class="metric-value">${last.nh ?? "—"}<small class="mx-slash">/</small>${last.nl ?? "—"}</div><div class="metric-foot"><span class="metric-muted">Stocks with a full year of data</span><span class="metric-tag neutral">Session ${esc(last.d || "")}</span></div></article>
+        </div>
+        <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Market breadth</h2><p>Share of stocks above their 50- and 200-session averages vs NIFTY 50 (dashed, right axis)</p></div>
+          <div class="mx-legend"><span><i style="background:var(--green)"></i>% above SMA200</span><span><i style="background:var(--blue)"></i>% above SMA50</span><span><i class="dash"></i>NIFTY 50</span></div></div>
+          <div class="mx-chart-wrap short"><canvas id="mxBreadthChart" aria-label="Market breadth chart" role="img"></canvas></div></section>
+        <section class="panel mx-panel">
+          <div class="panel-toolbar"><div class="tab-group" id="mxMoverTabs">${[["gainers", "Top gainers"], ["losers", "Top losers"], ["volume", "Volume shockers"], ["highs", "52W highs"], ["lows", "52W lows"], ["gapup", "Gap ups"]].map(([k, l]) => `<button class="tab ${S.moversTab === k ? "active" : ""}" data-tab="${k}">${l}</button>`).join("")}</div>
+            <button class="button button-small button-secondary" id="mxMoversExport">↓ CSV</button></div>
+          <div class="filter-panel mx-inline-filters">${universeControls("mxMov")}</div>
+          <div id="mxMoversTable"></div></section>`;
+      drawBreadth($("#mxBreadthChart"));
+      $("#mxMoverTabs").addEventListener("click", e => { const t = e.target.closest("[data-tab]"); if (!t) return; S.moversTab = t.dataset.tab; $$(".tab", $("#mxMoverTabs")).forEach(x => x.classList.toggle("active", x === t)); tableState.delete($("#mxMoversTable")); renderMovers(); });
+      ["mxMovCap", "mxMovLiquid"].forEach(id => $("#" + id).addEventListener("change", renderMovers));
+      $("#mxMoversExport").addEventListener("click", () => exportTable($("#mxMoversTable"), `movers-${S.moversTab}-${S.snap.meta.latest_market_date}.csv`));
+      renderMovers();
+    });
+  }
+  function renderMovers() {
+    const rows = universe(S.rows, readUniverse("mxMov")), t = S.moversTab;
+    const spec = {
+      gainers: [rows.filter(r => r.ch > 0), ["s", "c", "ch", "r1w", "r1m", "rv", "at"], "ch", -1],
+      losers: [rows.filter(r => r.ch < 0), ["s", "c", "ch", "r1w", "r1m", "rv", "at"], "ch", 1],
+      volume: [rows.filter(r => r.ev.includes("vol3")), ["s", "c", "ch", "rv", "at", "rsi"], "rv", -1],
+      highs: [rows.filter(r => r.ev.includes("h52")), ["s", "c", "ch", "r3m", "r1y", "rv", "at"], "r3m", -1],
+      lows: [rows.filter(r => r.ev.includes("l52")), ["s", "c", "ch", "r3m", "r1y", "rv", "at"], "r3m", 1],
+      gapup: [rows.filter(r => r.ev.includes("gap_up")), ["s", "c", "gap", "ch", "rv", "at"], "gap", -1],
+    }[t];
+    const host = $("#mxMoversTable");
+    if (!tableState.has(host)) tableState.set(host, { sort: spec[2], dir: spec[3] });
+    renderTable(host, spec[0], spec[1], { limit: 50 });
+  }
+
+  // ------------------------------------------------------------------ Stock view
+  function renderStock() {
+    const host = $("#mxStockBody");
+    withData(host, () => {
+      const r = S.bySym.get(S.stock) || S.bySym.get("RELIANCE") || S.rows[0];
+      if (!r) { host.innerHTML = `<div class="empty-state">No stocks in the dataset.</div>`; return; }
+      S.stock = r.s;
+      const b = S.bench || {}, watched = S.watch.has(r.s);
+      const atr = isNum(r.atrp) ? r.atrp * r.c / 100 : null;
+      const rangePos = isNum(r.h52) && isNum(r.l52) && r.h52 > r.l52 ? (r.c - r.l52) / (r.h52 - r.l52) * 100 : null;
+      const trend = isNum(r.s50) && isNum(r.s200) ? (r.c > r.s50 && r.s50 > r.s200 ? ["Uptrend", "Close > SMA50 > SMA200"] : r.c < r.s50 && r.s50 < r.s200 ? ["Downtrend", "Close < SMA50 < SMA200"] : ["Mixed", "Averages are not stacked"]) : ["Insufficient history", "Needs 200 sessions"];
+      const rsiZone = !isNum(r.rsi) ? "—" : r.rsi >= 70 ? "Overbought (≥70)" : r.rsi <= 30 ? "Oversold (≤30)" : r.rsi >= 50 ? "Bullish zone (50–70)" : "Bearish zone (30–50)";
+      const peers = r.cap ? S.rows.filter(x => x.ind === r.ind && x.s !== r.s && !x.stale && x.cap).sort((a, c) => (c.at || 0) - (a.at || 0)).slice(0, 12) : [];
+      host.innerHTML = `
+        ${r.stale ? `<div class="notice notice-warning"><span class="notice-symbol">!</span><div><strong>No trade on the latest session</strong><p>Last bar is ${esc(r.d)}, older than the market date ${esc(S.snap.meta.latest_market_date)}. The stock may be suspended, illiquid or moved out of the EQ series.</p></div></div>` : ""}
+        ${r.ca ? `<div class="notice notice-warning"><span class="notice-symbol">!</span><div><strong>Unadjusted price jump on ${esc(r.ca)}</strong><p>A one-day move of 40% or more is in the stored history, often a split or bonus. Prices are not adjusted, so returns and the 52-week range spanning that date are left blank, and moving averages near it are distorted.</p></div></div>` : ""}
+        <section class="panel mx-stock-head">
+          <div><div class="eyebrow">${esc(r.ind)}${r.cap ? " · " + CAP_LABELS[r.cap] : ""}${r.n50 ? " · NIFTY 50" : ""}</div>
+            <h1>${esc(r.s)} <small>${esc(r.n)}</small></h1>
+            <div class="mx-price"><strong>₹${nf(r.c)}</strong> ${pct(r.ch)} <span>EOD ${esc(r.d)}</span></div></div>
+          <div class="heading-actions"><button class="button button-secondary" id="mxWatchToggle">${watched ? "★ In watchlist" : "☆ Add to watchlist"}</button>
+            <button class="button button-primary" id="mxPlanTrade" ${atr ? "" : "disabled"}>◈ Plan in risk calculator</button></div>
+        </section>
+        <section class="panel mx-panel">
+          <div class="panel-toolbar"><div class="tab-group" id="mxRange">${[[63, "3M"], [126, "6M"], [250, "1Y"], [9999, "All"]].map(([n, l]) => `<button class="tab ${S.range === n ? "active" : ""}" data-n="${n}">${l}</button>`).join("")}</div>
+            <div class="tab-group" id="mxOverlays">${[["s20", "SMA20"], ["s50", "SMA50"], ["s200", "SMA200"]].map(([k, l]) => `<button class="tab ${S.overlays[k] ? "active" : ""}" data-k="${k}">${l}</button>`).join("")}</div></div>
+          <div class="mx-readout" id="mxReadout">Loading chart…</div>
+          <div class="mx-chart-wrap"><canvas id="mxCandles" aria-label="${esc(r.s)} daily candlestick chart" role="img"></canvas></div>
+        </section>
+        <div class="mx-two-col">
+          <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Performance</h2><p>Close-to-close, vs NIFTY 50</p></div></div>
+            <div class="mx-stat-grid">${[["1D", "ch"], ["1W", "r1w"], ["1M", "r1m"], ["3M", "r3m"], ["6M", "r6m"], ["1Y", "r1y"]].map(([l, k]) =>
+              `<div><span>${l}</span><strong>${pct(r[k])}</strong><small>NIFTY ${pct(b[k])}</small></div>`).join("")}</div>
+            <div class="mx-range"><div class="mx-range-labels"><span>52W low ₹${nf(r.l52)}</span><span>${isNum(r.dh) ? nf(-r.dh, 1) + "% below high" : ""}</span><span>52W high ₹${nf(r.h52)}</span></div>
+              <div class="mx-range-track">${isNum(rangePos) ? `<i style="left:${Math.max(0, Math.min(100, rangePos))}%"></i>` : ""}</div></div>
+          </section>
+          <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Technicals</h2><p>Latest session · descriptive, not a recommendation</p></div></div>
+            <div class="mx-kv">
+              <div><span>Trend</span><strong>${trend[0]}</strong><small>${trend[1]}</small></div>
+              <div><span>RSI (14, Wilder)</span><strong>${nf(r.rsi, 1)}</strong><small>${rsiZone}</small></div>
+              <div><span>MACD (12, 26, 9)</span><strong>${nf(r.macd, 2)}</strong><small>Histogram ${isNum(r.macdh) ? (r.macdh >= 0 ? "positive" : "negative") + " " + nf(r.macdh, 2) : "—"}</small></div>
+              ${["s20", "s50", "s200"].map(k => `<div><span>${k.replace("s", "SMA ")}</span><strong>₹${nf(r[k])}</strong><small>Close ${isNum(r[k]) ? pct((r.c / r[k] - 1) * 100, 1) + " vs average" : "—"}</small></div>`).join("")}
+              <div><span>EMA 20</span><strong>₹${nf(r.e20)}</strong><small>Close ${isNum(r.e20) ? pct((r.c / r.e20 - 1) * 100, 1) : "—"}</small></div>
+              <div><span>ATR 14</span><strong>₹${nf(atr)}</strong><small>${nf(r.atrp)}% of price · 2×ATR stop ₹${nf(atr ? r.c - 2 * atr : null)}</small></div>
+              <div><span>Volume</span><strong>${r.v.toLocaleString("en-IN")}</strong><small>${isNum(r.rv) ? nf(r.rv) + "× 20-session avg" : "—"}</small></div>
+              <div><span>Avg turnover (20)</span><strong>${cr(r.at)}</strong><small>${isNum(r.at) && r.at >= LIQUID_CR ? "Above" : "Below"} ₹${LIQUID_CR} cr liquidity floor</small></div>
+            </div>
+            <div class="mx-events">${r.ev.length ? r.ev.map(e => `<span class="mx-chip">${esc(EVENT_LABELS[e] || e)}</span>`).join("") : `<span class="mx-muted">No pattern or crossover events on the latest session.</span>`}</div>
+          </section>
+        </div>
+        <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Industry peers</h2><p>${r.cap ? `${esc(r.ind)} · most traded classified stocks` : "Peers are available for Nifty 100/Midcap/Smallcap/Microcap members only"}</p></div></div>
+          <div id="mxPeers"></div></section>`;
+      if (peers.length) renderTable($("#mxPeers"), peers, ["s", "c", "ch", "r1m", "r3m", "r1y", "rsi", "at"], { limit: 12, sort: "at" });
+      else $("#mxPeers").innerHTML = `<div class="empty-state">No classified peers.</div>`;
+      $("#mxWatchToggle").addEventListener("click", () => { toggleWatch(r.s); renderStock(); });
+      $("#mxPlanTrade").addEventListener("click", () => planTrade(r, atr));
+      $("#mxRange").addEventListener("click", e => { const t = e.target.closest("[data-n]"); if (!t) return; S.range = +t.dataset.n; renderStock(); });
+      $("#mxOverlays").addEventListener("click", e => { const t = e.target.closest("[data-k]"); if (!t) return; S.overlays[t.dataset.k] = !S.overlays[t.dataset.k]; renderStock(); });
+      document.title = `${r.s} · EDGE NSE`;
+      loadBars(r).then(bars => { if (S.stock === r.s && $("#mxCandles")) { S.lastBars = bars; drawCandles($("#mxCandles"), bars, $("#mxReadout")); } })
+        .catch(err => { const el = $("#mxReadout"); if (el) el.textContent = `Chart data unavailable (${err.message}).`; });
+    });
+  }
+  function planTrade(r, atr) {
+    const entry = Math.round(r.c * 1.0025 * 20) / 20, stop = Math.round((r.c - 2 * atr) * 20) / 20, target = Math.round((entry + 2 * (entry - stop)) * 20) / 20;
+    const set = (id, v) => { const el = $("#" + id); if (el) { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); } };
+    set("entryInput", entry.toFixed(2)); set("stopInput", stop.toFixed(2)); set("targetInput", target.toFixed(2));
+    openView("risk"); $("#calculateRisk")?.click();
+  }
+
+  // ------------------------------------------------------------------ Scans
+  const SCANS = [
+    { group: "Price action", id: "h52", name: "New 52-week high", desc: "High exceeded the prior 250-session high", test: r => r.ev.includes("h52"), cols: ["s", "c", "ch", "r3m", "r1y", "rv", "at"], sort: "r3m" },
+    { group: "Price action", id: "l52", name: "New 52-week low", desc: "Low broke the prior 250-session low", test: r => r.ev.includes("l52"), cols: ["s", "c", "ch", "r3m", "r1y", "rv", "at"], sort: "r3m", dir: 1 },
+    { group: "Price action", id: "near52", name: "Within 5% of 52W high, above SMA200", desc: "Leaders consolidating near highs", test: r => isNum(r.dh) && r.dh >= -5 && r.c > r.s200, cols: ["s", "c", "ch", "dh", "r3m", "rsi", "at"], sort: "dh" },
+    { group: "Price action", id: "b20v", name: "20-session breakout on volume", desc: "Close above prior 20-session high with ≥1.5× volume", test: r => r.ev.includes("b20") && r.rv >= 1.5, cols: ["s", "c", "ch", "rv", "rsi", "r1m", "at"], sort: "rv" },
+    { group: "Price action", id: "d20", name: "20-session breakdown", desc: "Close below prior 20-session low", test: r => r.ev.includes("d20"), cols: ["s", "c", "ch", "rv", "rsi", "r1m", "at"], sort: "ch", dir: 1 },
+    { group: "Price action", id: "gapup", name: "Gap up", desc: "Open ≥2% above previous close and above prior high", test: r => r.ev.includes("gap_up"), cols: ["s", "c", "gap", "ch", "rv", "at"], sort: "gap" },
+    { group: "Price action", id: "gapdn", name: "Gap down", desc: "Open ≥2% below previous close and below prior low", test: r => r.ev.includes("gap_dn"), cols: ["s", "c", "gap", "ch", "rv", "at"], sort: "gap", dir: 1 },
+    { group: "Moving averages", id: "gx", name: "Golden cross", desc: "SMA50 crossed above SMA200 in the last 5 sessions", test: r => r.ev.includes("gx"), cols: ["s", "c", "ch", "r1m", "r3m", "rsi", "at"], sort: "r1m" },
+    { group: "Moving averages", id: "dx", name: "Death cross", desc: "SMA50 crossed below SMA200 in the last 5 sessions", test: r => r.ev.includes("dx"), cols: ["s", "c", "ch", "r1m", "r3m", "rsi", "at"], sort: "r1m", dir: 1 },
+    { group: "Moving averages", id: "stack", name: "Above all key averages", desc: "Close > SMA20 > SMA50 > SMA200", test: r => r.c > r.s20 && r.s20 > r.s50 && r.s50 > r.s200, cols: ["s", "c", "ch", "r1m", "r3m", "rsi", "at"], sort: "r3m" },
+    { group: "Moving averages", id: "e20up", name: "Reclaimed EMA20 in an uptrend", desc: "Crossed back above EMA20 with close > SMA200", test: r => r.ev.includes("e20_up") && r.c > r.s200, cols: ["s", "c", "ch", "rsi", "rv", "at"], sort: "ch" },
+    { group: "Moving averages", id: "below200", name: "Below SMA200", desc: "Close under the 200-session average", test: r => isNum(r.s200) && r.c < r.s200, cols: ["s", "c", "ch", "r3m", "r1y", "rsi", "at"], sort: "r3m", dir: 1 },
+    { group: "Momentum", id: "macdup", name: "MACD bullish crossover", desc: "MACD line crossed above its signal today", test: r => r.ev.includes("macd_up"), cols: ["s", "c", "ch", "rsi", "r1m", "at"], sort: "ch" },
+    { group: "Momentum", id: "macddn", name: "MACD bearish crossover", desc: "MACD line crossed below its signal today", test: r => r.ev.includes("macd_dn"), cols: ["s", "c", "ch", "rsi", "r1m", "at"], sort: "ch", dir: 1 },
+    { group: "Momentum", id: "rsios", name: "RSI oversold", desc: "RSI(14) ≤ 30", test: r => r.rsi <= 30, cols: ["s", "c", "ch", "rsi", "r1m", "at"], sort: "rsi", dir: 1 },
+    { group: "Momentum", id: "rsiob", name: "RSI overbought", desc: "RSI(14) ≥ 70", test: r => r.rsi >= 70, cols: ["s", "c", "ch", "rsi", "r1m", "at"], sort: "rsi" },
+    { group: "Momentum", id: "dipup", name: "Pullback in uptrend", desc: "RSI ≤ 40 while close > SMA200", test: r => r.rsi <= 40 && r.c > r.s200, cols: ["s", "c", "ch", "rsi", "r3m", "at"], sort: "rsi", dir: 1 },
+    { group: "Momentum", id: "rs3m", name: "Outperforming NIFTY 50 (3M)", desc: "3-month return above the index, close > SMA200", test: r => isNum(r.r3m) && S.bench && r.r3m > S.bench.r3m && r.c > r.s200, cols: ["s", "c", "r3m", "r1m", "r1y", "rsi", "at"], sort: "r3m" },
+    { group: "Volume", id: "vol3", name: "Volume shockers", desc: "Volume ≥ 3× the 20-session average", test: r => r.ev.includes("vol3"), cols: ["s", "c", "ch", "rv", "at", "rsi"], sort: "rv" },
+    { group: "Volume", id: "volup", name: "High-volume up day", desc: "Up ≥2% on ≥2× average volume", test: r => r.ch >= 2 && r.rv >= 2, cols: ["s", "c", "ch", "rv", "at", "rsi"], sort: "rv" },
+    { group: "Candlesticks", id: "bullen", name: "Bullish engulfing", desc: "Green body engulfs the prior red body", test: r => r.ev.includes("bull_engulf"), cols: ["s", "c", "ch", "rsi", "rv", "at"], sort: "rv" },
+    { group: "Candlesticks", id: "bearen", name: "Bearish engulfing", desc: "Red body engulfs the prior green body", test: r => r.ev.includes("bear_engulf"), cols: ["s", "c", "ch", "rsi", "rv", "at"], sort: "rv" },
+    { group: "Candlesticks", id: "nr7", name: "NR7 volatility contraction", desc: "Narrowest high-low range of the last 7 sessions", test: r => r.ev.includes("nr7"), cols: ["s", "c", "ch", "rsi", "rv", "at"], sort: "at" },
+    { group: "Candlesticks", id: "inside", name: "Inside day", desc: "High and low inside the prior session's range", test: r => r.ev.includes("inside"), cols: ["s", "c", "ch", "rsi", "rv", "at"], sort: "at" },
+  ];
+  const FIELDS = [
+    ["c", "Close (₹)"], ["ch", "1D change %"], ["r1w", "1W return %"], ["r1m", "1M return %"], ["r3m", "3M return %"], ["r6m", "6M return %"], ["r1y", "1Y return %"],
+    ["dh", "% from 52W high"], ["dl", "% above 52W low"], ["rsi", "RSI 14"], ["rv", "Relative volume ×"], ["at", "Avg turnover (₹ cr)"], ["atrp", "ATR % of price"],
+    ["gap", "Gap %"], ["macdh", "MACD histogram"], ["s20", "SMA20"], ["s50", "SMA50"], ["s200", "SMA200"], ["e20", "EMA20"],
+  ];
+  const fieldLabel = k => (FIELDS.find(f => f[0] === k) || [k, k])[1];
+  function customTest(scan) {
+    return r => scan.conds.every(({ f, op, v, vf }) => {
+      const a = r[f], b = vf ? r[vf] : +v;
+      if (!isNum(a) || !isNum(b)) return false;
+      return op === ">" ? a > b : op === "<" ? a < b : op === ">=" ? a >= b : a <= b;
+    });
+  }
+  function allScans() {
+    return [...SCANS, ...S.custom.map(c => ({ group: "My scans", id: c.id, name: c.name, desc: c.conds.map(x => `${fieldLabel(x.f)} ${x.op} ${x.vf ? fieldLabel(x.vf) : x.v}`).join(" AND "),
+      test: customTest(c), cols: ["s", "c", "ch", "r1m", "rsi", "rv", "at"], sort: "at", custom: true }))];
+  }
+  function renderScans() {
+    const host = $("#mxScansBody");
+    withData(host, () => {
+      host.innerHTML = `<div class="filter-panel panel">${universeControls("mxScan")}</div>
+        <div class="mx-scan-layout"><aside class="panel mx-scan-list" id="mxScanList"></aside>
+          <section class="panel mx-panel"><div class="panel-toolbar"><div><h2 id="mxScanTitle"></h2><p id="mxScanDesc"></p></div>
+            <div class="heading-actions"><button class="button button-small button-secondary" id="mxScanDelete">Delete scan</button><button class="button button-small button-secondary" id="mxScanExport">↓ CSV</button></div></div>
+            <div id="mxScanTable"></div></section></div>
+        <section class="panel mx-panel" id="mxBuilder"><div class="panel-toolbar"><div><h2>Build a custom scan</h2><p>All conditions must hold. Compare a field with a number or with another field (e.g. Close > SMA200). Saved in this browser.</p></div></div>
+          <div id="mxConds"></div>
+          <div class="mx-builder-foot"><button class="button button-small button-secondary" id="mxAddCond">＋ Condition</button>
+            <div class="input-field"><input id="mxScanName" placeholder="Scan name" maxlength="60"></div>
+            <button class="button button-small button-secondary" id="mxPreviewScan">Preview</button><button class="button button-small button-primary" id="mxSaveScan">Save scan</button></div></section>`;
+      ["mxScanCap", "mxScanLiquid"].forEach(id => $("#" + id).addEventListener("change", () => { paintScanList(); runScan(); }));
+      $("#mxScanExport").addEventListener("click", () => exportTable($("#mxScanTable"), `scan-${S.scanId}-${S.snap.meta.latest_market_date}.csv`));
+      $("#mxScanDelete").addEventListener("click", () => { S.custom = S.custom.filter(c => c.id !== S.scanId); store.set(CUSTOM_KEY, S.custom); S.scanId = SCANS[0].id; paintScanList(); runScan(); });
+      setupBuilder();
+      paintScanList(); runScan();
+    });
+  }
+  function paintScanList() {
+    const rows = universe(S.rows, readUniverse("mxScan"));
+    let group = "";
+    $("#mxScanList").innerHTML = allScans().map(sc => {
+      const head = sc.group !== group ? `<div class="workspace-label">${esc((group = sc.group).toUpperCase())}</div>` : "";
+      const count = rows.filter(sc.test).length;
+      return `${head}<button class="mx-scan-item ${sc.id === S.scanId ? "active" : ""}" data-scan="${esc(sc.id)}"><span>${esc(sc.name)}</span><b>${count}</b></button>`;
+    }).join("");
+    $$("[data-scan]", $("#mxScanList")).forEach(b => b.addEventListener("click", () => { S.scanId = b.dataset.scan; tableState.delete($("#mxScanTable")); paintScanList(); runScan(); }));
+  }
+  function runScan(previewScan) {
+    const sc = previewScan || allScans().find(s => s.id === S.scanId) || SCANS[0];
+    const rows = universe(S.rows, readUniverse("mxScan")).filter(sc.test);
+    $("#mxScanTitle").textContent = sc.name; $("#mxScanDesc").textContent = sc.desc;
+    $("#mxScanDelete").classList.toggle("hidden", !sc.custom);
+    const host = $("#mxScanTable");
+    if (!tableState.has(host)) tableState.set(host, { sort: sc.sort, dir: sc.dir || -1 });
+    renderTable(host, rows, sc.cols, { limit: 300, empty: "No stocks match this scan on the latest session." });
+  }
+  function setupBuilder() {
+    const conds = [{ f: "c", op: ">", vf: "s200" }, { f: "rsi", op: "<", v: "40" }];
+    const opts = (sel, withNum) => (withNum ? `<option value="">Number…</option>` : "") + FIELDS.map(([k, l]) => `<option value="${k}" ${k === sel ? "selected" : ""}>${esc(l)}</option>`).join("");
+    const paint = () => {
+      $("#mxConds").innerHTML = conds.map((c, i) => `<div class="mx-cond" data-i="${i}">
+        <select data-p="f">${opts(c.f)}</select>
+        <select data-p="op">${[">", ">=", "<", "<="].map(o => `<option ${o === c.op ? "selected" : ""}>${o}</option>`).join("")}</select>
+        <select data-p="vf">${opts(c.vf || "", true)}</select>
+        <input data-p="v" type="number" step="any" value="${esc(c.v ?? "")}" ${c.vf ? "hidden" : ""} placeholder="Value">
+        <button class="icon-button" data-del="${i}" aria-label="Remove condition">×</button></div>`).join("");
+    };
+    $("#mxConds").addEventListener("change", e => { const row = e.target.closest(".mx-cond"); if (!row) return; const c = conds[+row.dataset.i]; c[e.target.dataset.p] = e.target.value; if (e.target.dataset.p === "vf" && !c.vf) delete c.vf; paint(); });
+    $("#mxConds").addEventListener("input", e => { if (e.target.dataset.p === "v") conds[+e.target.closest(".mx-cond").dataset.i].v = e.target.value; });
+    $("#mxConds").addEventListener("click", e => { const d = e.target.closest("[data-del]"); if (d) { conds.splice(+d.dataset.del, 1); paint(); } });
+    $("#mxAddCond").addEventListener("click", () => { conds.push({ f: "r1m", op: ">", v: "0" }); paint(); });
+    const current = () => {
+      const valid = conds.filter(c => c.f && (c.vf || (c.v !== "" && c.v != null && Number.isFinite(+c.v)))).map(c => ({ ...c }));
+      return valid.length ? { id: "custom-" + Date.now().toString(36), name: $("#mxScanName").value.trim() || "Custom scan", conds: valid } : null;
+    };
+    $("#mxPreviewScan").addEventListener("click", () => { const c = current(); if (!c) return; tableState.delete($("#mxScanTable"));
+      runScan({ name: c.name + " (preview)", desc: c.conds.map(x => `${fieldLabel(x.f)} ${x.op} ${x.vf ? fieldLabel(x.vf) : x.v}`).join(" AND "), test: customTest(c), cols: ["s", "c", "ch", "r1m", "rsi", "rv", "at"], sort: "at" });
+      $("#mxScanTitle").scrollIntoView({ behavior: "smooth", block: "center" }); });
+    $("#mxSaveScan").addEventListener("click", () => { const c = current(); if (!c) return; S.custom.push(c); store.set(CUSTOM_KEY, S.custom); S.scanId = c.id; tableState.delete($("#mxScanTable")); paintScanList(); runScan(); });
+    paint();
+  }
+
+  // ------------------------------------------------------------------ Sectors
+  function renderSectors() {
+    const host = $("#mxSectorsBody");
+    withData(host, () => {
+      host.innerHTML = `<div class="notice notice-info"><span class="notice-symbol">i</span><div><strong>Coverage</strong><p>Industries come from NSE's Nifty 100, Midcap 150, Smallcap 250 and Microcap 250 constituent lists (${S.snap.meta.classified_symbols} stocks). Figures are medians of member returns, not official sector index values.</p></div></div>
+        <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Industry performance</h2><p>Click an industry to list its stocks</p></div>
+          <div class="filter-field mx-compact"><select id="mxSecCap"><option value="all">All sizes</option><option value="large">Large cap</option><option value="mid">Mid cap</option><option value="small">Small cap</option><option value="micro">Micro cap</option></select></div></div>
+          <div id="mxSectorTable"></div></section>
+        <section class="panel mx-panel hidden" id="mxSectorDetail"><div class="panel-toolbar"><div><h2 id="mxSectorName"></h2><p>Members on the latest session</p></div><button class="button button-small button-secondary" id="mxSectorExport">↓ CSV</button></div><div id="mxSectorStocks"></div></section>`;
+      $("#mxSecCap").addEventListener("change", paintSectors);
+      $("#mxSectorExport").addEventListener("click", () => exportTable($("#mxSectorStocks"), `industry-${(S.sector || "").replace(/\W+/g, "-")}.csv`));
+      paintSectors();
+    });
+  }
+  const SEC = { sort: "r1m", dir: -1 };
+  function paintSectors() {
+    const cap = $("#mxSecCap").value;
+    const members = S.rows.filter(r => r.cap && !r.stale && (cap === "all" || r.cap === cap));
+    const groups = new Map();
+    members.forEach(r => { if (!groups.has(r.ind)) groups.set(r.ind, []); groups.get(r.ind).push(r); });
+    const agg = [...groups].map(([ind, rs]) => ({ ind, n: rs.length, ch: median(rs.map(r => r.ch)), r1w: median(rs.map(r => r.r1w)), r1m: median(rs.map(r => r.r1m)),
+      r3m: median(rs.map(r => r.r3m)), r1y: median(rs.map(r => r.r1y)), adv: rs.filter(r => r.ch > 0).length, dec: rs.filter(r => r.ch < 0).length,
+      p50: rs.filter(r => isNum(r.s50)).length ? rs.filter(r => r.c > r.s50).length / rs.filter(r => isNum(r.s50)).length * 100 : null }));
+    const keys = [["ind", "INDUSTRY"], ["n", "STOCKS"], ["ch", "1D"], ["r1w", "1W"], ["r1m", "1M"], ["r3m", "3M"], ["r1y", "1Y"], ["p50", "% > SMA50"], ["ad", "ADV / DEC"]];
+    agg.sort((a, b) => { const k = SEC.sort === "ad" ? "adv" : SEC.sort; const x = a[k], y = b[k]; if (x == null) return 1; if (y == null) return -1; return (typeof x === "string" ? x.localeCompare(y) : x - y) * SEC.dir; });
+    const cell = (a, k) => k === "ind" ? `<button class="mx-sym" data-ind="${esc(a.ind)}">${esc(a.ind)}</button>` : k === "n" ? a.n : k === "p50" ? nf(a.p50, 0) + "%" : k === "ad" ? `<span class="up">${a.adv}</span> / <span class="down">${a.dec}</span>` : pct(a[k]);
+    $("#mxSectorTable").innerHTML = `<div class="table-wrap"><table class="mx-table"><thead><tr>${keys.map(([k, l]) => `<th class="${k === "ind" ? "" : "num"}"><button data-ssort="${k}">${l}${SEC.sort === k ? (SEC.dir > 0 ? " ▲" : " ▼") : ""}</button></th>`).join("")}</tr></thead>
+      <tbody>${agg.map(a => `<tr class="${a.ind === S.sector ? "mx-selected" : ""}">${keys.map(([k]) => `<td class="${k === "ind" ? "" : "num"}">${cell(a, k)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    $$("[data-ssort]").forEach(b => b.addEventListener("click", () => { const k = b.dataset.ssort; SEC.dir = SEC.sort === k ? -SEC.dir : (k === "ind" ? 1 : -1); SEC.sort = k; paintSectors(); }));
+    $$("[data-ind]").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); S.sector = b.dataset.ind; paintSectors(); }));
+    if (S.sector && groups.has(S.sector)) {
+      $("#mxSectorDetail").classList.remove("hidden"); $("#mxSectorName").textContent = S.sector;
+      renderTable($("#mxSectorStocks"), groups.get(S.sector), ["s", "c", "ch", "r1w", "r1m", "r3m", "r1y", "rsi", "at"], { sort: "at" });
+    }
+  }
+
+  // ------------------------------------------------------------------ Watchlist
+  function toggleWatch(sym) { S.watch.has(sym) ? S.watch.delete(sym) : S.watch.add(sym); store.set(WATCH_KEY, [...S.watch]); updateWatchCount(); }
+  function updateWatchCount() { const el = $("#watchNavCount"); if (el) el.textContent = S.watch.size; }
+  function renderWatchlist() {
+    const host = $("#mxWatchBody");
+    withData(host, () => {
+      host.innerHTML = `<section class="panel mx-panel"><div class="panel-toolbar"><div class="input-field mx-watch-add"><input id="mxWatchSearch" placeholder="Add a stock: type a symbol or company name" autocomplete="off"></div>
+          <div class="heading-actions"><button class="button button-small button-secondary" id="mxWatchExport">↓ CSV</button><button class="button button-small button-secondary" id="mxWatchClear">Clear</button></div></div>
+          <div id="mxWatchTable"></div><p class="small-note">Stored in this browser only. Export the CSV to move it to another device.</p></section>`;
+      attachSearch($("#mxWatchSearch"), sym => { if (!S.watch.has(sym)) toggleWatch(sym); paintWatch(); });
+      $("#mxWatchExport").addEventListener("click", () => exportTable($("#mxWatchTable"), "watchlist.csv"));
+      $("#mxWatchClear").addEventListener("click", () => { if (S.watch.size && confirm("Remove every stock from this browser's watchlist?")) { S.watch.clear(); store.set(WATCH_KEY, []); updateWatchCount(); paintWatch(); } });
+      paintWatch();
+    });
+  }
+  function paintWatch() {
+    const host = $("#mxWatchTable");
+    const rows = [...S.watch].map(s => S.bySym.get(s)).filter(Boolean);
+    const missing = [...S.watch].filter(s => !S.bySym.has(s));
+    renderTable(host, rows, ["s", "c", "ch", "r1w", "r1m", "r3m", "dh", "rsi", "rv"], { sort: "ch", empty: "Your watchlist is empty. Add stocks above or with ☆ on any stock page.", after: h => addRemoveButtons(h, missing) });
+  }
+  function addRemoveButtons(host, missing) {
+    $$("tbody tr", host).forEach((tr, i) => { const sym = host._rows[i]?.s; if (!sym) return; const td = document.createElement("td"); td.className = "num"; td.innerHTML = `<button class="icon-button" aria-label="Remove ${esc(sym)}">×</button>`; td.firstChild.addEventListener("click", () => { toggleWatch(sym); paintWatch(); }); tr.append(td); });
+    const head = $("thead tr", host); if (head) head.insertAdjacentHTML("beforeend", "<th></th>");
+    if (missing.length) host.insertAdjacentHTML("beforeend", `<p class="small-note">Not in the latest dataset: ${missing.map(esc).join(", ")}</p>`);
+  }
+
+  // ------------------------------------------------------------------ wiring
+  const RENDER = { markets: renderMarkets, stock: renderStock, scans: renderScans, sectors: renderSectors, watchlist: renderWatchlist };
+  function init() {
+    updateWatchCount();
+    $$(".nav-item").forEach(b => b.addEventListener("click", () => {
+      const fn = RENDER[b.dataset.view];
+      document.title = "EDGE NSE — Trading Research Terminal";
+      if (b.dataset.view !== "stock" && location.hash.startsWith("#stock/")) history.replaceState(null, "", location.pathname + location.search);
+      if (fn) fn();
+    }));
+    const global = $("#globalSearch");
+    if (global) attachSearch(global, openStock);
+    if ($("#mxStockSearch")) attachSearch($("#mxStockSearch"), openStock);
+    let t; window.addEventListener("resize", () => { clearTimeout(t); t = setTimeout(() => {
+      if ($("#view-stock.active") && S.lastBars && $("#mxCandles")) drawCandles($("#mxCandles"), S.lastBars, $("#mxReadout"));
+      if ($("#view-markets.active") && $("#mxBreadthChart")) drawBreadth($("#mxBreadthChart"));
+    }, 150); });
+    load().catch(() => {});
+    routeFromHash();
+  }
+  document.readyState === "loading" ? document.addEventListener("DOMContentLoaded", init) : init();
+})();
