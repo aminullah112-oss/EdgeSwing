@@ -35,6 +35,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import update_nse_data as core  # noqa: E402  (shared loaders, HTTP helper, CA rule)
 import fundamentals as fund  # noqa: E402
+import conviction as conv  # noqa: E402
 
 ROOT = core.ROOT
 DEFAULT_OUT = ROOT / "data" / "market"
@@ -65,7 +66,7 @@ SNAPSHOT_COLUMNS = [
     "s", "n", "ind", "cap", "n50", "d", "o", "h", "l", "c", "ch", "v", "t", "at", "rv",
     "r1w", "r1m", "r3m", "r6m", "r1y", "h52", "l52", "dh", "dl",
     "s20", "s50", "s200", "e20", "rsi", "atrp", "macd", "macds", "macdh", "gap",
-    "ev", "ca", "stale", "key", "len", "vw", "vw20",
+    "ev", "ca", "stale", "key", "len", "vw", "vw20", "cv", "cvf", "hc", "adx", "rs55",
 ] + FUND_COLUMNS
 
 
@@ -358,6 +359,30 @@ def stock_key(symbol: str, used: set[str]) -> str:
     return key
 
 
+def regime_today(bench_close: dict[str, float]) -> dict[str, Any] | None:
+    """Market regime gate on the latest benchmark date: NIFTY 50 vs its 50-session SMA."""
+    dates = sorted(bench_close)
+    if len(dates) < 50:
+        return None
+    sma = sum(bench_close[d] for d in dates[-50:]) / 50
+    close = bench_close[dates[-1]]
+    return {"date": dates[-1], "on": close > sma, "nifty": rnd(close), "sma50": rnd(sma),
+            "pct_vs_sma50": rnd((close / sma - 1) * 100)}
+
+
+def conviction_today(s: dict[str, list], i: int, has_jump: bool, current: bool) -> dict[str, Any]:
+    """Conviction score, passed factors and matching high-conviction scans on the latest bar."""
+    if "adx" not in s or i < 1:
+        return {"cv": None, "cvf": [], "hc": [], "adx": None, "rs55": None}
+    f = conv.factors_at(s, i)
+    score = conv.score(f)
+    hc = []
+    if current and not has_jump and i >= conv.WARMUP and conv.eligible(s, i, conv.HC_MIN_TURNOVER):
+        hc = [sc["id"] for sc in conv.HC_SCANS if sc["test"](s, i, f, score, math.nan)]
+    return {"cv": score if i >= conv.WARMUP else None, "cvf": [k for k, v in f.items() if v], "hc": hc,
+            "adx": rnd(s["adx"][i], 1), "rs55": rnd(s["rs55"][i] * 100 if conv.finite(s["rs55"][i]) else None, 1)}
+
+
 def snapshot_row(symbol: str, s: dict[str, list[float]], info: dict[str, Any], jumps: list[dict[str, Any]],
                  latest_date: str, key: str, fvals: dict[str, Any] | None = None) -> list[Any]:
     i = len(s["c"]) - 1
@@ -390,6 +415,7 @@ def snapshot_row(symbol: str, s: dict[str, list[float]], info: dict[str, Any], j
         "ev": events_for(s), "ca": jumps[-1]["date"] if jumps else None,
         "stale": 1 if dates[i] != latest_date else 0, "key": key, "len": len(c),
         "vw": rnd(s["vw"][i]), "vw20": rnd(s["vw20"][i]),
+        **conviction_today(s, i, bool(jumps), dates[i] == latest_date),
         **{k: None for k in FUND_COLUMNS}, **(fvals or {}),
     }
     return [row[col] for col in SNAPSHOT_COLUMNS]
@@ -459,10 +485,11 @@ def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]]
     all_series: dict[str, dict[str, list[float]]] = {}
     rows: list[list[Any]] = []
     stock_bytes = 0
+    bench_close = {r["date"]: float(r["close"]) for r in by_symbol.get(BENCHMARK, [])}
     for symbol in sorted(by_symbol):
         if symbol.startswith("NIFTY") or symbol == "DEMO_INDEX":
             continue
-        s = series(by_symbol[symbol])
+        s = conv.extend(series(by_symbol[symbol]), bench_close)
         all_series[symbol] = s
         key = stock_key(symbol, used)
         info = dict(constituents.get(symbol, {}))
@@ -507,7 +534,15 @@ def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]]
         "as_of_min": fund_dates[0] if fund_dates else None, "as_of_max": fund_dates[-1] if fund_dates else None,
         "source": "data/fundamentals.csv (user export); P/E, market cap, P/B and yield recomputed at each close",
     }
+    evidence = conv.backtest(all_series, set(jump_flags), equity_dates, bench_close) if bench_close else None
+    if evidence:
+        for sid, st in evidence["scans"].items():
+            st["verdict"] = conv.verdict(st)
     meta = {
+        "conviction": {"regime": regime_today(bench_close),
+                       "factors": [{"id": k, "label": v} for k, v in conv.FACTORS],
+                       "scans": [{k: sc[k] for k in ("id", "name", "desc")} for sc in conv.HC_SCANS],
+                       "min_turnover_cr": conv.HC_MIN_TURNOVER / 1e7, "evidence": evidence},
         "fundamentals": meta_fund,
         "schema_version": 1,
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
@@ -548,9 +583,36 @@ def main(argv: list[str]) -> int:
     summary = build(history, constituents, out_dir, source, warnings, equity_list, fundamentals, fund_as_of)
     print(json.dumps({k: summary[k] for k in ("latest_market_date", "sessions", "symbols", "classified_symbols",
                                               "stale_symbols", "classification_source", "fundamentals", "bytes")}, indent=2))
+    annotate_screen(out_dir / "snapshot.json", core.SCREEN_PATH)
     for w in warnings:
         print("WARNING:", w, file=sys.stderr)
     return 0
+
+
+def annotate_screen(snapshot_path: Path, screen_path: Path) -> int:
+    """Copy each screener candidate's conviction score and factors into latest_screen.json."""
+    if not snapshot_path.exists() or not screen_path.exists():
+        return 0
+    snap = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    cols = snap["columns"]
+    by = {r[0]: dict(zip(cols, r)) for r in snap["rows"]}
+    screen = json.loads(screen_path.read_text(encoding="utf-8"))
+    n = 0
+    for cand in screen.get("candidates", []):
+        row = by.get(cand.get("symbol"))
+        if row and row["d"] == cand.get("date"):
+            cand["conviction"], cand["conviction_factors"], cand["hc_scans"] = row["cv"], row["cvf"], row["hc"]
+            n += 1
+    cmeta = snap["meta"]["conviction"]
+    screen["conviction_factors"] = cmeta["factors"]
+    screen["market_regime"] = cmeta.get("regime")
+    ev = cmeta.get("evidence") or {}
+    setup_ids = {"breakout": "scr_breakout", "pullback": "scr_pullback", "relative_strength": "scr_rs"}
+    screen["setup_evidence"] = {k: {**ev["scans"][v]["h10"], "verdict": ev["scans"][v].get("verdict")}
+                                for k, v in setup_ids.items() if v in ev.get("scans", {})}
+    screen["setup_evidence_period"] = ev.get("period")
+    core.write_json(screen_path, screen, compact=True)
+    return n
 
 
 if __name__ == "__main__":

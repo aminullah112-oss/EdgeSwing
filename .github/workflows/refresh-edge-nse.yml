@@ -12,6 +12,7 @@ on:
       - '.github/scripts/update_nse_data.py'
       - '.github/scripts/build_market_data.py'
       - '.github/scripts/fundamentals.py'
+      - '.github/scripts/conviction.py'
       - 'data/fundamentals.csv'
       - '.github/workflows/refresh-edge-nse.yml'
       - 'tests/**'

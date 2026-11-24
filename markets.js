@@ -39,7 +39,7 @@
   const S = { snap: null, rows: [], bySym: new Map(), breadth: [], bench: null, loading: null, error: null,
     watch: new Set(store.get(WATCH_KEY, [])), custom: store.get(CUSTOM_KEY, []),
     stock: null, bars: new Map(), range: 250, overlays: { s20: true, s50: true, s200: true, vw20: true },
-    moversTab: "gainers", scanId: "h52", sector: null };
+    moversTab: "gainers", scanId: "hc_breakout", sector: null };
 
   // ------------------------------------------------------------------ data
   function load() {
@@ -94,6 +94,7 @@
     dh: { label: "VS 52W HIGH", html: r => pct(r.dh, 1), sort: r => r.dh, num: true },
     at: { label: "AVG TURNOVER", html: r => cr(r.at), sort: r => r.at, num: true },
     gap: { label: "GAP", html: r => pct(r.gap), sort: r => r.gap, num: true },
+    cv: { label: "CONVICTION", html: r => isNum(r.cv) ? `<span class="conv-pill ${r.cv >= 6 ? "conv-high" : r.cv >= 5 ? "conv-mid" : "conv-low"}">${r.cv}/7</span>` : "—", sort: r => r.cv, num: true },
     vwd: { label: "VS VWAP", html: r => isNum(r.vw) ? pct((r.c / r.vw - 1) * 100, 1) : "—", sort: r => isNum(r.vw) ? r.c / r.vw : null, num: true },
     vw20d: { label: "VS VWAP20", html: r => isNum(r.vw20) ? pct((r.c / r.vw20 - 1) * 100, 1) : "—", sort: r => isNum(r.vw20) ? r.c / r.vw20 : null, num: true },
     mcap: { label: "MKT CAP", html: r => cr(r.mcap), sort: r => r.mcap, num: true },
@@ -358,6 +359,7 @@
             <div class="mx-events">${r.ev.length ? r.ev.map(e => `<span class="mx-chip">${esc(EVENT_LABELS[e] || e)}</span>`).join("") : `<span class="mx-muted">No pattern or crossover events on the latest session.</span>`}</div>
           </section>
         </div>
+        ${convictionPanel(r)}
         ${fundamentalsPanel(r)}
         <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Industry peers</h2><p>${r.cap ? `${esc(r.ind)} · most traded classified stocks` : "Peers are available for Nifty 100/Midcap/Smallcap/Microcap members only"}</p></div></div>
           <div id="mxPeers"></div></section>`;
@@ -456,17 +458,20 @@
     });
   }
   function allScans() {
-    return [...SCANS.filter(sc => sc.group !== "Fundamentals" || hasFund()), ...S.custom.map(c => ({ group: "My scans", id: c.id, name: c.name, desc: c.conds.map(x => `${fieldLabel(x.f)} ${x.op} ${x.vf ? fieldLabel(x.vf) : x.v}`).join(" AND "),
+    const hc = (S.snap?.meta?.conviction?.scans || []).map(sc => ({ group: "High conviction", id: sc.id, name: sc.name, desc: sc.desc, hc: true,
+      test: r => (r.hc || []).includes(sc.id), cols: ["s", "c", "ch", "cv", "r1m", "rv", "vw20d", "at"], sort: "cv" }));
+    return [...hc, ...SCANS.filter(sc => sc.group !== "Fundamentals" || hasFund()), ...S.custom.map(c => ({ group: "My scans", id: c.id, name: c.name, desc: c.conds.map(x => `${fieldLabel(x.f)} ${x.op} ${x.vf ? fieldLabel(x.vf) : x.v}`).join(" AND "),
       test: customTest(c), cols: withFund(["s", "c", "ch", "r1m", "rsi", "rv", "at"]), sort: hasFund() ? "mcap" : "at", custom: true }))];
   }
   function renderScans() {
     const host = $("#mxScansBody");
     withData(host, () => {
-      host.innerHTML = `<div class="filter-panel panel">${universeControls("mxScan")}</div>
+      host.innerHTML = `${regimeNotice()}<div class="filter-panel panel">${universeControls("mxScan")}</div>
         <div class="mx-scan-layout"><aside class="panel mx-scan-list" id="mxScanList"></aside>
-          <section class="panel mx-panel"><div class="panel-toolbar"><div><h2 id="mxScanTitle"></h2><p id="mxScanDesc"></p></div>
+          <section class="panel mx-panel"><div id="mxScanEvidence"></div><div class="panel-toolbar"><div><h2 id="mxScanTitle"></h2><p id="mxScanDesc"></p></div>
             <div class="heading-actions"><button class="button button-small button-secondary" id="mxScanDelete">Delete scan</button><button class="button button-small button-secondary" id="mxScanExport">↓ CSV</button></div></div>
             <div id="mxScanTable"></div></section></div>
+        ${evidenceTable()}
         <section class="panel mx-panel" id="mxBuilder"><div class="panel-toolbar"><div><h2>Build a custom scan</h2><p>All conditions must hold. Compare a field with a number or with another field (e.g. Close > SMA200). Saved in this browser.</p></div></div>
           <div id="mxConds"></div>
           <div class="mx-builder-foot"><button class="button button-small button-secondary" id="mxAddCond">＋ Condition</button>
@@ -478,6 +483,50 @@
       setupBuilder();
       paintScanList(); runScan();
     });
+  }
+  // ---- conviction evidence (backtest published by build_market_data.py / conviction.py)
+  const VERDICT = { supported: "Edge supported", not_supported: "No edge", insufficient: "Too few signals" };
+  function regimeNotice() {
+    const reg = S.snap?.meta?.conviction?.regime;
+    if (!reg) return "";
+    return `<div class="notice ${reg.on ? "notice-info" : "notice-warning"} regime-banner"><span class="notice-symbol">${reg.on ? "✓" : "!"}</span><div>
+      <strong>Market regime ${reg.on ? "favourable" : "unfavourable"}: NIFTY 50 is ${nf(Math.abs(reg.pct_vs_sma50), 1)}% ${reg.on ? "above" : "below"} its 50-session average</strong>
+      <p>${reg.on ? "High-conviction scans are meant for this regime." : "Every long scan lost about 3% over 10 sessions in this regime in stored history. Treat matches as a watchlist, not entries."}</p></div></div>`;
+  }
+  function evStat(h) {
+    return h && h.n ? `<b>${h.median > 0 ? "+" : ""}${nf(h.median, 2)}%</b> median · ${nf(h.hit, 0)}% hit · ${h.excess > 0 ? "+" : ""}${nf(h.excess, 2)} pp vs avg stock · ${h.n} signals` : "no signals";
+  }
+  function evidenceCard(id) {
+    const ev = S.snap?.meta?.conviction?.evidence, st = ev?.scans?.[id];
+    if (!st) return "";
+    return `<div class="mx-evidence"><div><span class="verdict ${st.verdict}">${VERDICT[st.verdict] || st.verdict}</span>
+      <small>Backtest ${esc(ev.period[0])} to ${esc(ev.period[1])}: next-open entry, 10-session exit</small></div>
+      <div class="mx-evidence-row"><span>NIFTY above SMA50</span><span>${evStat(st.h10.on)}</span></div>
+      <div class="mx-evidence-row"><span>NIFTY below SMA50</span><span>${evStat(st.h10.off)}</span></div></div>`;
+  }
+  function evidenceTable() {
+    const ev = S.snap?.meta?.conviction?.evidence;
+    if (!ev) return "";
+    const rows = [...Object.entries(ev.scans), ["baseline", { name: "All liquid stocks (baseline)", ...ev.baseline }]];
+    const cell = h => h && h.n ? `${h.median > 0 ? "+" : ""}${nf(h.median, 2)}% <small>${nf(h.hit, 0)}% hit · n ${h.n}</small>` : "—";
+    return `<section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Does any of this work? Backtest evidence</h2>
+      <p>${esc(ev.period[0])} to ${esc(ev.period[1])} (${ev.regime_days.on} sessions with NIFTY above SMA50, ${ev.regime_days.off} below). ${esc(ev.method)}</p></div></div>
+      <div class="table-wrap"><table class="mx-table"><thead><tr><th>SCAN</th><th class="num">10D · NIFTY ABOVE SMA50</th><th class="num">VS AVG STOCK</th><th class="num">10D · NIFTY BELOW SMA50</th><th>VERDICT</th></tr></thead>
+      <tbody>${rows.map(([id, st]) => `<tr><td>${esc(st.name)}</td><td class="num">${cell(st.h10.on)}</td>
+        <td class="num">${id === "baseline" ? "—" : (st.h10.on?.n ? `${st.h10.on.excess > 0 ? "+" : ""}${nf(st.h10.on.excess, 2)} pp` : "—")}</td>
+        <td class="num">${cell(st.h10.off)}</td><td>${st.verdict ? `<span class="verdict ${st.verdict}">${VERDICT[st.verdict]}</span>` : ""}</td></tr>`).join("")}</tbody></table></div>
+      <p class="small-note">One market cycle of data with survivorship bias (delisted stocks absent) and unadjusted prices (split-affected stocks excluded). Signals cluster on a few dates, so effective sample sizes are smaller than n suggests. Treat this as directional evidence, not proof.</p></section>`;
+  }
+  function convictionPanel(r) {
+    const factors = S.snap?.meta?.conviction?.factors || [];
+    if (!factors.length || r.cv == null) return "";
+    const passed = new Set(r.cvf || []);
+    const names = (S.snap.meta.conviction.scans || []).filter(sc => (r.hc || []).includes(sc.id)).map(sc => sc.name);
+    return `<section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Conviction ${r.cv}/7</h2>
+      <p>Independent confirmations on the latest session${names.length ? ` · In: ${names.map(esc).join(", ")}` : ""}</p></div>
+      <span class="conv-pill ${r.cv >= 6 ? "conv-high" : r.cv >= 5 ? "conv-mid" : "conv-low"}">${r.cv >= 6 ? "High" : r.cv >= 5 ? "Moderate" : "Low"}</span></div>
+      <div class="mx-checklist">${factors.map(f => `<div class="${passed.has(f.id) ? "ok" : "no"}"><i>${passed.has(f.id) ? "✓" : "✗"}</i>${esc(f.label)}</div>`).join("")}</div>
+      <p class="small-note">ADX ${nf(r.adx, 1)} · 55-session relative strength vs NIFTY ${isNum(r.rs55) ? pct(r.rs55, 1) : "—"}. A count of confirmations, not a probability.</p></section>`;
   }
   function paintScanList() {
     const rows = universe(S.rows, readUniverse("mxScan"));
@@ -494,6 +543,7 @@
     const rows = universe(S.rows, readUniverse("mxScan")).filter(sc.test);
     $("#mxScanTitle").textContent = sc.name; $("#mxScanDesc").textContent = sc.desc;
     $("#mxScanDelete").classList.toggle("hidden", !sc.custom);
+    $("#mxScanEvidence").innerHTML = sc.hc ? evidenceCard(sc.id) : "";
     const host = $("#mxScanTable");
     if (!tableState.has(host)) tableState.set(host, { sort: sc.sort, dir: sc.dir || -1 });
     renderTable(host, rows, sc.cols, { limit: 300, empty: "No stocks match this scan on the latest session." });

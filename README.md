@@ -32,6 +32,39 @@ Five additional views (sidebar → **Market explorer**) turn the same stored NSE
 
 Limits: end-of-day data only (no intraday), unadjusted prices (returns and 52-week ranges spanning a flagged ≥40% one-day move are left blank), no shareholding, delivery % or F&O data, and about 13 months of history.
 
+### Conviction scoring, market regime and backtest evidence
+
+Most scan libraries, StockEdge's ~510 included, are single conditions (one indicator crossing one level). `.github/scripts/conviction.py` instead scores every stock 0–7 on independent confirmations:
+
+- uptrend (close > SMA50 > SMA200, SMA200 rising)
+- beating NIFTY 50 over 55 sessions
+- RSI 50–70 with MACD above signal
+- close above 20-session VWAP
+- ADX(14) ≥ 20
+- within 15% of the 52-week high
+- up-day volume above down-day volume
+
+**High-conviction scans** combine the score with a trigger and need ₹5 cr average turnover: conviction leaders, high-conviction breakout, pullback and VWAP reclaim.
+
+**Market regime gate:** NIFTY 50 above its 50-session SMA. In stored history this mattered more than any stock-level filter. From 2026-07-22 to 2026-11-16, every long setup lost about 3% over 10 sessions when NIFTY was below its SMA50, and only some scans beat the average stock when it was above.
+
+**Evidence:** every high-conviction scan and every existing screener setup is replayed over stored history, and the explorer's Scans page and the Stock scanner's regime banner publish the results. The method:
+
+- new entries only
+- entry at the next session's open, exit at the close after 5 or 10 sessions
+- results compared with the average eligible stock on the same dates
+- split-affected stocks excluded
+
+A scan is labelled "edge supported" only with at least 30 regime-on signals, a positive median and a win over the average stock.
+
+Limits:
+- one market cycle of data
+- survivorship bias
+- signals cluster on few dates, so effective sample sizes are small
+- older sessions use a typical-price VWAP approximation
+
+Treat verdicts as directional evidence, and re-check them as history accumulates. The verdicts recompute on every run.
+
 ### Fundamentals (P/E, market cap, P/B, dividend yield, ROE, ROCE, debt/equity)
 
 Free automated sources are blocked from GitHub's cloud runners: NSE's website returns 403 behind bot protection and Yahoo Finance returns 429. So fundamentals come from a CSV you commit as `data/fundamentals.csv`, refreshed after each quarterly results season.
