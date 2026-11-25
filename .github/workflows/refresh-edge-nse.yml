@@ -103,6 +103,12 @@ jobs:
           rm -rf _site
           mkdir -p _site/assets _site/data
           cp index.html app.js markets.js styles.css .nojekyll _site/
+          # Version asset URLs with the commit so a cached old script never runs against a new page
+          # (GitHub Pages serves files with max-age=600).
+          v="${GITHUB_SHA::8}"
+          sed -i -e "s#href=\"styles.css\"#href=\"styles.css?v=$v\"#" -e "s#src=\"app.js\"#src=\"app.js?v=$v\"#" \
+                 -e "s#src=\"markets.js\"#src=\"markets.js?v=$v\"#" _site/index.html
+          grep -c "?v=$v" _site/index.html | grep -qx 3 || { echo "::error::asset versioning did not apply"; exit 1; }
           cp -R assets/. _site/assets/
           cp data/latest_screen.json _site/data/latest_screen.json
           if [ -f data/market/snapshot.json ]; then cp -R data/market _site/data/market; else echo "::warning::Market explorer dataset missing; explorer views will show a notice."; fi
