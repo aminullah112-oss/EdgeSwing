@@ -94,6 +94,7 @@
     dh: { label: "VS 52W HIGH", html: r => pct(r.dh, 1), sort: r => r.dh, num: true },
     at: { label: "AVG TURNOVER", html: r => cr(r.at), sort: r => r.at, num: true },
     gap: { label: "GAP", html: r => pct(r.gap), sort: r => r.gap, num: true },
+    se: { label: "STOCKEDGE-STYLE", html: r => isNum(r.seb) ? `<span class="se-pill ${r.seb - r.ser >= 10 ? "se-strong" : r.seb > r.ser ? "se-pos" : r.seb < r.ser ? "se-neg" : ""}">${r.seb}▲ ${r.ser}▼</span>` : "—", sort: r => isNum(r.seb) ? r.seb - r.ser : null, num: true },
     cv: { label: "CONVICTION", html: r => isNum(r.cv) ? `<span class="conv-pill ${r.cv >= 6 ? "conv-high" : r.cv >= 5 ? "conv-mid" : "conv-low"}">${r.cv}/7</span>` : "—", sort: r => r.cv, num: true },
     vwd: { label: "VS VWAP", html: r => isNum(r.vw) ? pct((r.c / r.vw - 1) * 100, 1) : "—", sort: r => isNum(r.vw) ? r.c / r.vw : null, num: true },
     vw20d: { label: "VS VWAP20", html: r => isNum(r.vw20) ? pct((r.c / r.vw20 - 1) * 100, 1) : "—", sort: r => isNum(r.vw20) ? r.c / r.vw20 : null, num: true },
@@ -360,6 +361,7 @@
           </section>
         </div>
         ${convictionPanel(r)}
+        ${sePanel(r)}
         ${fundamentalsPanel(r)}
         <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Industry peers</h2><p>${r.cap ? `${esc(r.ind)} · most traded classified stocks` : "Peers are available for Nifty 100/Midcap/Smallcap/Microcap members only"}</p></div></div>
           <div id="mxPeers"></div></section>`;
@@ -471,6 +473,7 @@
           <section class="panel mx-panel"><div id="mxScanEvidence"></div><div class="panel-toolbar"><div><h2 id="mxScanTitle"></h2><p id="mxScanDesc"></p></div>
             <div class="heading-actions"><button class="button button-small button-secondary" id="mxScanDelete">Delete scan</button><button class="button button-small button-secondary" id="mxScanExport">↓ CSV</button></div></div>
             <div id="mxScanTable"></div></section></div>
+        ${seFinder()}
         ${evidenceTable()}
         <section class="panel mx-panel" id="mxBuilder"><div class="panel-toolbar"><div><h2>Build a custom scan</h2><p>All conditions must hold. Compare a field with a number or with another field (e.g. Close > SMA200). Saved in this browser.</p></div></div>
           <div id="mxConds"></div>
@@ -481,17 +484,31 @@
       $("#mxScanExport").addEventListener("click", () => exportTable($("#mxScanTable"), `scan-${S.scanId}-${S.snap.meta.latest_market_date}.csv`));
       $("#mxScanDelete").addEventListener("click", () => { S.custom = S.custom.filter(c => c.id !== S.scanId); store.set(CUSTOM_KEY, S.custom); S.scanId = SCANS[0].id; paintScanList(); runScan(); });
       setupBuilder();
+      wireSeFinder();
       paintScanList(); runScan();
     });
   }
   // ---- conviction evidence (backtest published by build_market_data.py / conviction.py)
-  const VERDICT = { supported: "Edge supported", not_supported: "No edge", insufficient: "Too few signals" };
+  const VERDICT = { supported: "Edge supported", weak: "Weak edge", not_supported: "No edge", insufficient: "Too few signals" };
+  const fmtR = x => isNum(x) ? `${x > 0 ? "+" : ""}${nf(x, 2)}R` : "—";
+  function tradeStat(t) {
+    return t && t.trades ? `<b>${fmtR(t.avg_r)}</b> avg/trade · ${nf(t.win, 0)}% win · t ${isNum(t.t_days) ? nf(t.t_days, 1) : "—"} · ${t.trades} trades on ${t.days} days` : "no trades";
+  }
   function regimeNotice() {
     const reg = S.snap?.meta?.conviction?.regime;
     if (!reg) return "";
     return `<div class="notice ${reg.on ? "notice-info" : "notice-warning"} regime-banner"><span class="notice-symbol">${reg.on ? "✓" : "!"}</span><div>
       <strong>Market regime ${reg.on ? "favourable" : "unfavourable"}: NIFTY 50 is ${nf(Math.abs(reg.pct_vs_sma50), 1)}% ${reg.on ? "above" : "below"} its 50-session average</strong>
-      <p>${reg.on ? "High-conviction scans are meant for this regime." : "Every long scan lost about 3% over 10 sessions in this regime in stored history. Treat matches as a watchlist, not entries."}</p></div></div>`;
+      <p>${regimeEvidenceText()}</p></div></div>`;
+  }
+  function regimeEvidenceText() {
+    const ev = S.snap?.meta?.conviction?.evidence;
+    if (!ev) return "";
+    const b = ev.baseline?.h10 || {}, st = Object.values(ev.scans || {});
+    const supported = st.filter(x => x.verdict === "supported").map(x => x.name);
+    const avg = h => isNum(h?.mean) ? `${h.mean > 0 ? "+" : ""}${nf(h.mean, 2)}%` : "—";
+    return `Backtest ${esc(ev.period[0])} to ${esc(ev.period[1])}: the average stock returned ${avg(b.on)} over 10 sessions with NIFTY above SMA50 and ${avg(b.off)} below it. `
+      + (supported.length ? `Statistically supported edge: ${supported.map(esc).join(", ")}.` : "No scan shows a statistically supported edge, so treat matches as a watchlist, not entries.");
   }
   function evStat(h) {
     return h && h.n ? `<b>${h.median > 0 ? "+" : ""}${nf(h.median, 2)}%</b> median · ${nf(h.hit, 0)}% hit · ${h.excess > 0 ? "+" : ""}${nf(h.excess, 2)} pp vs avg stock · ${h.n} signals` : "no signals";
@@ -500,22 +517,74 @@
     const ev = S.snap?.meta?.conviction?.evidence, st = ev?.scans?.[id];
     if (!st) return "";
     return `<div class="mx-evidence"><div><span class="verdict ${st.verdict}">${VERDICT[st.verdict] || st.verdict}</span>
-      <small>Backtest ${esc(ev.period[0])} to ${esc(ev.period[1])}: next-open entry, 10-session exit</small></div>
-      <div class="mx-evidence-row"><span>NIFTY above SMA50</span><span>${evStat(st.h10.on)}</span></div>
-      <div class="mx-evidence-row"><span>NIFTY below SMA50</span><span>${evStat(st.h10.off)}</span></div></div>`;
+      <small>Backtest ${esc(ev.period[0])} to ${esc(ev.period[1])}</small></div>
+      <div class="mx-evidence-row"><span>Trade rules, NIFTY above SMA50</span><span>${tradeStat(st.trade?.on)}</span></div>
+      <div class="mx-evidence-row"><span>Trade rules, NIFTY below SMA50</span><span>${tradeStat(st.trade?.off)}</span></div>
+      <div class="mx-evidence-row"><span>10-session return, regime on</span><span>${evStat(st.h10.on)}</span></div>
+      ${yearRow(st.by_year_on)}</div>`;
+  }
+  function yearRow(by) {
+    const ys = Object.entries(by || {});
+    return ys.length ? `<div class="mx-evidence-row"><span>By year (regime on)</span><span>${ys.map(([y, t]) =>
+      `${esc(y)}: <b class="${(t.avg_r || 0) > 0 ? "up" : "down"}">${fmtR(t.avg_r)}</b> (${t.trades || 0})`).join(" · ")}</span></div>` : "";
   }
   function evidenceTable() {
     const ev = S.snap?.meta?.conviction?.evidence;
     if (!ev) return "";
     const rows = [...Object.entries(ev.scans), ["baseline", { name: "All liquid stocks (baseline)", ...ev.baseline }]];
     const cell = h => h && h.n ? `${h.median > 0 ? "+" : ""}${nf(h.median, 2)}% <small>${nf(h.hit, 0)}% hit · n ${h.n}</small>` : "—";
+    const tcell = t => t && t.trades ? `${fmtR(t.avg_r)} <small>${nf(t.win, 0)}% win · ${t.days} days · t ${isNum(t.t_days) ? nf(t.t_days, 1) : "—"}</small>` : "—";
+    const years = [...new Set(Object.values(ev.scans).flatMap(st => Object.keys(st.by_year_on || {})))].sort();
     return `<section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Does any of this work? Backtest evidence</h2>
-      <p>${esc(ev.period[0])} to ${esc(ev.period[1])} (${ev.regime_days.on} sessions with NIFTY above SMA50, ${ev.regime_days.off} below). ${esc(ev.method)}</p></div></div>
-      <div class="table-wrap"><table class="mx-table"><thead><tr><th>SCAN</th><th class="num">10D · NIFTY ABOVE SMA50</th><th class="num">VS AVG STOCK</th><th class="num">10D · NIFTY BELOW SMA50</th><th>VERDICT</th></tr></thead>
-      <tbody>${rows.map(([id, st]) => `<tr><td>${esc(st.name)}</td><td class="num">${cell(st.h10.on)}</td>
+      <p>${esc(ev.period[0])} to ${esc(ev.period[1])}${ev.symbols ? ` · ${ev.symbols.toLocaleString("en-IN")} stocks incl. later-delisted` : ""} · ${ev.regime_days.on} sessions with NIFTY above SMA50, ${ev.regime_days.off} below.</p></div></div>
+      <div class="table-wrap"><table class="mx-table"><thead><tr><th>SCAN</th><th class="num">TRADE RULES · REGIME ON</th><th class="num">TRADE RULES · REGIME OFF</th><th class="num">10D RETURN · REGIME ON</th><th class="num">VS AVG STOCK</th><th>VERDICT</th></tr></thead>
+      <tbody>${rows.map(([id, st]) => `<tr><td>${esc(st.name)}</td><td class="num">${id === "baseline" ? "—" : tcell(st.trade?.on)}</td>
+        <td class="num">${id === "baseline" ? "—" : tcell(st.trade?.off)}</td><td class="num">${cell(st.h10.on)}</td>
         <td class="num">${id === "baseline" ? "—" : (st.h10.on?.n ? `${st.h10.on.excess > 0 ? "+" : ""}${nf(st.h10.on.excess, 2)} pp` : "—")}</td>
-        <td class="num">${cell(st.h10.off)}</td><td>${st.verdict ? `<span class="verdict ${st.verdict}">${VERDICT[st.verdict]}</span>` : ""}</td></tr>`).join("")}</tbody></table></div>
-      <p class="small-note">One market cycle of data with survivorship bias (delisted stocks absent) and unadjusted prices (split-affected stocks excluded). Signals cluster on a few dates, so effective sample sizes are smaller than n suggests. Treat this as directional evidence, not proof.</p></section>`;
+        <td>${st.verdict ? `<span class="verdict ${st.verdict}">${VERDICT[st.verdict]}</span>` : ""}</td></tr>`).join("")}</tbody></table></div>
+      ${years.length ? `<h3 class="mx-subhead">Average R per trade by year, regime on: does the edge hold across markets?</h3>
+      <div class="table-wrap"><table class="mx-table"><thead><tr><th>SCAN</th>${years.map(y => `<th class="num">${esc(y)}</th>`).join("")}</tr></thead>
+      <tbody>${Object.values(ev.scans).map(st => `<tr><td>${esc(st.name)}</td>${years.map(y => { const t = st.by_year_on?.[y];
+        return `<td class="num">${t && t.trades ? `<span class="${t.avg_r > 0 ? "up" : "down"}">${fmtR(t.avg_r)}</span> <small>${t.trades}</small>` : "—"}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>` : ""}
+      <p class="small-note">${esc(ev.method)} Verdict: "supported" needs ≥30 signal days, positive average R, t ≥ 2 and a positive 10-day excess; "weak" is positive R with t ≥ 1. Prices are unadjusted, so windows around splits/bonuses are skipped. Past results, not a forecast.</p></section>`;
+  }
+  // ---- StockEdge-style scan catalogue (se_scans.py): same scan IDs as web.stockedge.com
+  const seCat = () => S.snap?.meta?.stockedge_scans?.catalogue || [];
+  const seLink = c => `https://web.stockedge.com/scan/${encodeURIComponent(c.slug)}/${c.id}`;
+  function sePanel(r) {
+    const cat = seCat();
+    if (!cat.length || !Array.isArray(r.se)) return "";
+    const byId = new Map(cat.map(c => [c.id, c])), groups = new Map();
+    r.se.map(id => byId.get(id)).filter(Boolean).forEach(c => { if (!groups.has(c.cat)) groups.set(c.cat, []); groups.get(c.cat).push(c); });
+    return `<section class="panel mx-panel"><div class="panel-toolbar"><div><h2>StockEdge-style scans: ${r.seb ?? 0} bullish, ${r.ser ?? 0} bearish</h2>
+      <p>${r.se.length} of ${cat.length} re-implemented StockEdge scans match the latest session. Links open StockEdge's page for the same scan ID to compare.</p></div>
+      <span class="se-pill ${r.seb - r.ser >= 10 ? "se-strong" : r.seb > r.ser ? "se-pos" : r.seb < r.ser ? "se-neg" : ""}">${r.seb ?? 0}▲ ${r.ser ?? 0}▼</span></div>
+      ${groups.size ? `<div class="mx-se-groups">${[...groups].map(([g, cs]) => `<div class="mx-se-group"><h4>${esc(g)}</h4>${cs.map(c =>
+        `<a class="${c.bias}" href="${seLink(c)}" target="_blank" rel="noopener" title="${esc(c.note || "")}">${esc(c.name)}</a>`).join("")}</div>`).join("")}</div>` : `<div class="empty-state">No StockEdge-style scan matches today.</div>`}
+      <p class="small-note">Counting scan hits measures how many single conditions agree, not expected return. Use alongside the conviction score and backtest evidence.</p></section>`;
+  }
+  function seFinder() {
+    const cat = seCat();
+    if (!cat.length) return "";
+    const groups = [...new Set(cat.map(c => c.cat))];
+    return `<section class="panel mx-panel"><div class="panel-toolbar"><div><h2>StockEdge-style scans (${cat.length})</h2>
+      <p>StockEdge's scan definitions re-implemented on our NSE data. The other ${510 - cat.length} of their 510 scans need delivery, F&O, shareholding or financial-results data we don't have.</p></div></div>
+      <div class="mx-se-finder"><select id="mxSeSelect"><option value="">Choose a scan…</option>${groups.map(g => `<optgroup label="${esc(g)}">${cat.filter(c => c.cat === g).map(c =>
+        `<option value="${c.id}">${c.bias === "bullish" ? "▲" : c.bias === "bearish" ? "▼" : "•"} ${esc(c.name)}</option>`).join("")}</optgroup>`).join("")}</select>
+      <a id="mxSeLink" class="text-button hidden" target="_blank" rel="noopener">Compare on StockEdge ↗</a><span id="mxSeNote" class="mx-muted"></span></div>
+      <div id="mxSeTable"></div></section>`;
+  }
+  function wireSeFinder() {
+    const sel = $("#mxSeSelect");
+    if (!sel) return;
+    sel.addEventListener("change", () => {
+      const c = seCat().find(x => x.id === +sel.value), host = $("#mxSeTable");
+      tableState.delete(host);
+      if (!c) { host.innerHTML = ""; $("#mxSeLink").classList.add("hidden"); $("#mxSeNote").textContent = ""; return; }
+      $("#mxSeLink").href = seLink(c); $("#mxSeLink").classList.remove("hidden"); $("#mxSeNote").textContent = c.note || "";
+      const rows = universe(S.rows, readUniverse("mxScan")).filter(r => (r.se || []).includes(c.id));
+      renderTable(host, rows, ["s", "c", "ch", "r1m", "se", "cv", "rv", "at"], { sort: "se", limit: 300, empty: "No stocks match this scan on the latest session." });
+    });
   }
   function convictionPanel(r) {
     const factors = S.snap?.meta?.conviction?.factors || [];

@@ -46,7 +46,16 @@ Most scan libraries, StockEdge's ~510 included, are single conditions (one indic
 
 **High-conviction scans** combine the score with a trigger and need ₹5 cr average turnover: conviction leaders, high-conviction breakout, pullback and VWAP reclaim.
 
-**Market regime gate:** NIFTY 50 above its 50-session SMA. In stored history this mattered more than any stock-level filter. From 2026-07-22 to 2026-11-16, every long setup lost about 3% over 10 sessions when NIFTY was below its SMA50, and only some scans beat the average stock when it was above.
+**Market regime gate:** NIFTY 50 above its 50-session SMA.
+
+**What the evidence says (Oct 2021 – Nov 2026, 2,503 stocks including delisted ones, 726 regime-on sessions): no scan, and none of the screener setups, shows an edge.**
+
+- Under the proposal trade rules with costs, every scan averaged roughly −0.06R to +0.01R per trade. The screener breakout was reliably negative (t ≈ −2.4).
+- On 10-session forward returns, the scans matched the average stock (+0.41% mean with the regime on).
+- Only 2023 was positive across scans.
+- An earlier four-month sample (Jul–Nov 2026) suggested an edge for high-conviction breakouts. Five years did not confirm it, which is a textbook case of a short sample overstating results.
+
+The regime gate still separated average returns a little (+0.41% vs +0.14% over 10 sessions), but not enough to make the setups profitable. The verdicts recompute daily. Until one is "supported", treat signals as research and paper-trading candidates only.
 
 **Evidence:** every high-conviction scan and every existing screener setup is replayed over stored history, and the explorer's Scans page and the Stock scanner's regime banner publish the results. The method:
 
@@ -64,6 +73,28 @@ Limits:
 - older sessions use a typical-price VWAP approximation
 
 Treat verdicts as directional evidence, and re-check them as history accumulates. The verdicts recompute on every run.
+
+### Multi-year research archive
+
+`data/history.csv` keeps a rolling ~320 sessions for the live screen. Backtests need several market regimes, so older sessions live in write-once monthly files, `data/archive/YYYY-MM.csv.gz` (same columns, NIFTY 50 included), from January 2021.
+
+- The data comes from NSE's CM-UDiFF bhavcopy (2024 onwards) and the older `cmDDMONYYYYbhav.csv` format (before 2024).
+- The archive includes stocks that later delisted, so it suffers less survivorship bias than the live universe.
+- A month file is written once when complete, with deterministic gzip, and never rewritten.
+- Each daily run archives any newly completed month from `history.csv` (`archive_nse.py sync`), with no extra downloads.
+
+To rebuild or extend the archive (about 35 seconds per month):
+
+```bash
+python .github/scripts/archive_nse.py backfill 2021-01 2025-09
+```
+
+The evidence on the Scans page and in the scanner banner is computed over archive plus history, one symbol at a time. It reports:
+- the trade-rule simulation in R, with t-statistics computed across signal days, not individual trades
+- forward returns against the average stock
+- results split by market regime and by year
+
+Split and bonus distortions are handled by skipping signals within 250 sessions after or 15 before a one-day move of 40% or more, instead of dropping the whole stock.
 
 ### Fundamentals (P/E, market cap, P/B, dividend yield, ROE, ROCE, debt/equity)
 

@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import update_nse_data as core  # noqa: E402  (shared loaders, HTTP helper, CA rule)
 import fundamentals as fund  # noqa: E402
 import conviction as conv  # noqa: E402
+import se_scans as se  # noqa: E402
 
 ROOT = core.ROOT
 DEFAULT_OUT = ROOT / "data" / "market"
@@ -66,7 +67,7 @@ SNAPSHOT_COLUMNS = [
     "s", "n", "ind", "cap", "n50", "d", "o", "h", "l", "c", "ch", "v", "t", "at", "rv",
     "r1w", "r1m", "r3m", "r6m", "r1y", "h52", "l52", "dh", "dl",
     "s20", "s50", "s200", "e20", "rsi", "atrp", "macd", "macds", "macdh", "gap",
-    "ev", "ca", "stale", "key", "len", "vw", "vw20", "cv", "cvf", "hc", "adx", "rs55",
+    "ev", "ca", "stale", "key", "len", "vw", "vw20", "cv", "cvf", "hc", "adx", "rs55", "se", "seb", "ser",
 ] + FUND_COLUMNS
 
 
@@ -258,8 +259,20 @@ def wilder_rsi(closes: list[float], length: int = 14) -> list[float]:
 
 
 def rolling_extreme(values: list[float], length: int, fn) -> list[float]:
-    """fn(window) over the trailing `length` values including i (shorter at the start)."""
-    return [fn(values[max(0, i - length + 1):i + 1]) for i in range(len(values))]
+    """fn (max or min) over the trailing `length` values including i (shorter at the start).
+    Monotonic deque: O(n), needed for multi-year research series."""
+    from collections import deque
+    better = (lambda a, b: a >= b) if fn is max else (lambda a, b: a <= b)
+    dq: deque[int] = deque()
+    out = []
+    for i, v in enumerate(values):
+        while dq and better(v, values[dq[-1]]):
+            dq.pop()
+        dq.append(i)
+        if dq[0] <= i - length:
+            dq.popleft()
+        out.append(values[dq[0]])
+    return out
 
 
 def series(rows: list[dict[str, Any]]) -> dict[str, list[float]]:
@@ -359,6 +372,53 @@ def stock_key(symbol: str, used: set[str]) -> str:
     return key
 
 
+def research_evidence(history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Backtest every scan over the multi-year archive plus current history, one symbol at a time."""
+    import archive_nse
+    data = archive_nse.load_by_symbol(history)
+    bench = data.get(BENCHMARK, {})
+    bench_close = {d: v[3] for d, v in bench.items()}
+    if len(bench_close) < 60:
+        return None
+    bt = conv.Backtest(bench_close)
+    symbols = 0
+    for symbol in sorted(data):
+        if symbol.startswith("NIFTY") or symbol == "DEMO_INDEX":
+            continue
+        bars = data[symbol]
+        if len(bars) <= conv.WARMUP + 1:
+            continue
+        rows = [{"date": d, "symbol": symbol, "open": b[0], "high": b[1], "low": b[2], "close": b[3],
+                 "volume": b[4], "value": b[5]} for d, b in sorted(bars.items())]
+        bt.add(conv.extend(series(rows), bench_close))
+        symbols += 1
+    out = bt.result()
+    out["symbols"] = symbols
+    out["source"] = "data/archive monthly files + data/history.csv"
+    return out
+
+
+def add_stockedge_scans(rows: list[list[Any]], all_series: dict[str, dict], bench_close: dict[str, float]) -> int:
+    """Fill se (hit IDs), seb (bullish count) and ser (bearish count) for current, non-stale stocks."""
+    col = {k: SNAPSHOT_COLUMNS.index(k) for k in ("s", "stale", "ind", "pe", "pb", "dy", "roe", "roce", "de", "se", "seb", "ser")}
+    ind_pe: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        if r[col["pe"]] is not None and r[col["pe"]] > 0:
+            ind_pe[r[col["ind"]]].append(r[col["pe"]])
+    medians = {k: sorted(v)[len(v) // 2] for k, v in ind_pe.items() if len(v) >= 3}
+    n = 0
+    for r in rows:
+        if r[col["stale"]]:
+            continue
+        fund = {k: r[col[k]] for k in ("pe", "pb", "dy", "roe", "roce", "de")}
+        fund = {**fund, "ind_pe": medians.get(r[col["ind"]])} if any(v is not None for v in fund.values()) else None
+        hits = se.evaluate(all_series[r[col["s"]]], bench_close, fund)
+        rt = se.rating(hits)
+        r[col["se"]], r[col["seb"]], r[col["ser"]] = hits, rt["bull"], rt["bear"]
+        n += 1
+    return n
+
+
 def regime_today(bench_close: dict[str, float]) -> dict[str, Any] | None:
     """Market regime gate on the latest benchmark date: NIFTY 50 vs its 50-session SMA."""
     dates = sorted(bench_close)
@@ -416,6 +476,7 @@ def snapshot_row(symbol: str, s: dict[str, list[float]], info: dict[str, Any], j
         "stale": 1 if dates[i] != latest_date else 0, "key": key, "len": len(c),
         "vw": rnd(s["vw"][i]), "vw20": rnd(s["vw20"][i]),
         **conviction_today(s, i, bool(jumps), dates[i] == latest_date),
+        "se": [], "seb": None, "ser": None,  # filled by add_stockedge_scans()
         **{k: None for k in FUND_COLUMNS}, **(fvals or {}),
     }
     return [row[col] for col in SNAPSHOT_COLUMNS]
@@ -465,7 +526,8 @@ def write_compact(path: Path, content: Any) -> int:
 
 def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]], out_dir: Path,
           source_note: str, warnings: list[str], equity_list: list[dict[str, str]] | None = None,
-          fundamentals: dict[str, dict[str, Any]] | None = None, fundamentals_as_of: str | None = None) -> dict[str, Any]:
+          fundamentals: dict[str, dict[str, Any]] | None = None, fundamentals_as_of: str | None = None,
+          evidence: dict[str, Any] | None = None) -> dict[str, Any]:
     equity_names = {r["symbol"]: r["name"] for r in (equity_list or [])}
     fundamentals = fundamentals or {}
     fund_blocked: list[str] = []
@@ -522,6 +584,7 @@ def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]]
                      **{k: rnd((bc[i] / bc[i - n] - 1) * 100) if i >= n else None for k, n in RETURN_WINDOWS.items()},
                      "s50": rnd(bench["s50"][i]), "s200": rnd(bench["s200"][i]), "rsi": rnd(bench["rsi"][i], 1)}
     classified = sum(1 for r in rows if r[SNAPSHOT_COLUMNS.index("cap")])
+    se_count = add_stockedge_scans(rows, all_series, bench_close)
     fa_idx, pe_idx, mc_idx = (SNAPSHOT_COLUMNS.index(k) for k in ("fa", "pe", "mcap"))
     fund_dates = sorted({r[fa_idx] for r in rows if r[fa_idx]})
     if fund_blocked:
@@ -534,11 +597,12 @@ def build(history: list[dict[str, Any]], constituents: dict[str, dict[str, Any]]
         "as_of_min": fund_dates[0] if fund_dates else None, "as_of_max": fund_dates[-1] if fund_dates else None,
         "source": "data/fundamentals.csv (user export); P/E, market cap, P/B and yield recomputed at each close",
     }
-    evidence = conv.backtest(all_series, set(jump_flags), equity_dates, bench_close) if bench_close else None
-    if evidence:
-        for sid, st in evidence["scans"].items():
-            st["verdict"] = conv.verdict(st)
+    if evidence is None:
+        evidence = conv.backtest(all_series, set(jump_flags), equity_dates, bench_close) if bench_close else None
     meta = {
+        "stockedge_scans": {"catalogue": se.catalogue(), "evaluated_stocks": se_count,
+                            "source": "web.stockedge.com/sitemap/sitemap_scan.xml (510 scans); definitions re-implemented on NSE "
+                                      "bhavcopy data with standard parameters; thresholds are ours where StockEdge's are unpublished"},
         "conviction": {"regime": regime_today(bench_close),
                        "factors": [{"id": k, "label": v} for k, v in conv.FACTORS],
                        "scans": [{k: sc[k] for k in ("id", "name", "desc")} for sc in conv.HC_SCANS],
@@ -580,7 +644,8 @@ def main(argv: list[str]) -> int:
     known = {r["symbol"] for r in history if not r["symbol"].startswith("NIFTY")}
     fundamentals, fund_warnings, fund_as_of = load_fundamentals(known, equity_list, constituents)
     warnings += fund_warnings
-    summary = build(history, constituents, out_dir, source, warnings, equity_list, fundamentals, fund_as_of)
+    evidence = research_evidence(history)
+    summary = build(history, constituents, out_dir, source, warnings, equity_list, fundamentals, fund_as_of, evidence)
     print(json.dumps({k: summary[k] for k in ("latest_market_date", "sessions", "symbols", "classified_symbols",
                                               "stale_symbols", "classification_source", "fundamentals", "bytes")}, indent=2))
     annotate_screen(out_dir / "snapshot.json", core.SCREEN_PATH)
@@ -596,19 +661,23 @@ def annotate_screen(snapshot_path: Path, screen_path: Path) -> int:
     snap = json.loads(snapshot_path.read_text(encoding="utf-8"))
     cols = snap["columns"]
     by = {r[0]: dict(zip(cols, r)) for r in snap["rows"]}
+    se_names = {c["id"]: c for c in snap["meta"].get("stockedge_scans", {}).get("catalogue", [])}
     screen = json.loads(screen_path.read_text(encoding="utf-8"))
     n = 0
     for cand in screen.get("candidates", []):
         row = by.get(cand.get("symbol"))
         if row and row["d"] == cand.get("date"):
             cand["conviction"], cand["conviction_factors"], cand["hc_scans"] = row["cv"], row["cvf"], row["hc"]
+            cand["se_bull"], cand["se_bear"] = row.get("seb"), row.get("ser")
+            cand["se_hits"] = [[h, se_names[h]["name"], se_names[h]["bias"]] for h in row.get("se") or [] if h in se_names]
             n += 1
     cmeta = snap["meta"]["conviction"]
     screen["conviction_factors"] = cmeta["factors"]
     screen["market_regime"] = cmeta.get("regime")
     ev = cmeta.get("evidence") or {}
     setup_ids = {"breakout": "scr_breakout", "pullback": "scr_pullback", "relative_strength": "scr_rs"}
-    screen["setup_evidence"] = {k: {**ev["scans"][v]["h10"], "verdict": ev["scans"][v].get("verdict")}
+    screen["setup_evidence"] = {k: {**ev["scans"][v]["h10"], "trade": ev["scans"][v].get("trade"),
+                                    "by_year_on": ev["scans"][v].get("by_year_on"), "verdict": ev["scans"][v].get("verdict")}
                                 for k, v in setup_ids.items() if v in ev.get("scans", {})}
     screen["setup_evidence_period"] = ev.get("period")
     core.write_json(screen_path, screen, compact=True)
