@@ -618,7 +618,7 @@
   function navigate(view){
     $$(".view").forEach(el=>el.classList.toggle("active",el.id==="view-"+view));
     $$(".nav-item").forEach(el=>el.classList.toggle("active",el.dataset.view===view));
-    const labels={overview:"Overview",scanner:"Stock scanner",risk:"Risk calculator",ledger:"Paper ledger",data:"Data & research",markets:"Markets",stock:"Stock analysis",scans:"Scans",sectors:"Sectors",watchlist:"Watchlist"};
+    const labels={overview:"Overview",scanner:"Stock scanner",risk:"Risk calculator",ledger:"Paper ledger",data:"Data & research",momentum:"Momentum portfolio",markets:"Markets",stock:"Stock analysis",scans:"Scans",sectors:"Sectors",watchlist:"Watchlist"};
     $("#pageCrumb").textContent=labels[view]||"Overview";$("#sidebar").classList.remove("open");
     if(view==="scanner")renderScanner();if(view==="ledger")renderLedger();if(view==="overview")setTimeout(drawEquityChart,50);
     window.scrollTo({top:0,behavior:"smooth"});
