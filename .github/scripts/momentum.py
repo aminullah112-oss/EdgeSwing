@@ -1,10 +1,13 @@
-"""Monthly 12-1 momentum portfolio: current picks, backtest evidence and a frozen paper log.
+"""Monthly momentum portfolios: current picks, backtest evidence and frozen paper logs.
 
 Rules (all decided on data available at the signal close):
   * Rebalance on the last session of each month; trade at the next session's open.
   * Universe: 20-session average turnover >= Rs 5 crore, close >= Rs 20, at least 252 sessions of
     history, traded on >= 90% of the last 252 sessions. Delisted stocks are included in history.
-  * Score (primary): 12-1 momentum = return from 252 to 21 sessions ago (skips the latest month).
+  * Scores: NSE-style (primary) = mean z-score of 6- and 12-month return divided by 1-year volatility,
+    the NIFTY Momentum index method; 12-1 = return from 252 to 21 sessions ago. 12-1 was specified
+    first; NSE-style became primary after the 2014-2026 test (significant in both sample halves,
+    smaller drawdowns). Both are frozen monthly so the forward record decides without hindsight.
   * Portfolio: top 30 by score, equal weight; 0.125% cost per side on traded weight.
 Corporate actions: prices are unadjusted, so a one-day close move of 40% or more (NSE circuit bands
 make genuine moves this large rare for liquid stocks) is treated as a 0% day when chaining returns.
@@ -243,6 +246,14 @@ def summarize(name, dates, rets, turnover=None, bench=None):
     return out
 
 
+STRATEGIES = {
+    "nse": {"label": "NSE-style risk-adjusted momentum, top 30",
+            "score": "Mean z-score of 6- and 12-month return divided by 1-year volatility (NIFTY Momentum index method)"},
+    "12-1": {"label": "12-1 momentum, top 30", "score": "Return from 252 to 21 sessions ago (skips the latest month)"},
+}
+PRIMARY = "nse"
+
+
 def evidence(panel, calendar, nifty_close) -> dict[str, Any]:
     ends = month_ends(calendar)
     d_u, r_u, t_u = run_strategy(panel, calendar, nifty_close, ends, "universe", 0)
@@ -252,43 +263,58 @@ def evidence(panel, calendar, nifty_close) -> dict[str, Any]:
         k1 = ends[m + 1] if m + 1 < len(ends) else last - 1
         r_n.append(nifty_close[k1] / nifty_close[k0] - 1)
     variants = [summarize("NIFTY 50 (price index)", d_u, r_n), summarize("Equal-weight universe", d_u, r_u, t_u)]
-    specs = [("12-1", 30, False, "12-1 momentum, top 30 (primary)"), ("12-1", 30, True, "12-1 top 30, only when NIFTY > 200-day SMA"),
-             ("12-1", 20, False, "12-1 momentum, top 20"), ("nse", 30, False, "NSE-style risk-adjusted, top 30"),
+    specs = [("nse", 30, False, "NSE-style risk-adjusted, top 30 (primary)"), ("12-1", 30, False, "12-1 momentum, top 30"),
+             ("nse", 30, True, "NSE-style top 30, only when NIFTY > 200-day SMA"), ("12-1", 20, False, "12-1 momentum, top 20"),
              ("6-1", 20, False, "6-1 momentum, top 20")]
+    split: dict[str, Any] = {}
     for strat, n, rf, label in specs:
         d, r, t = run_strategy(panel, calendar, nifty_close, ends, strat, n, rf)
         variants.append({"id": f"{strat}-{n}{'-regime' if rf else ''}", **summarize(label, d, r, t, r_u)})
-    # robustness: same primary rule rebalanced 10 sessions after month end
-    mid = [k + 10 for k in ends if k + 10 < last - 1]
-    d_um, r_um, _ = run_strategy(panel, calendar, nifty_close, mid, "universe", 0)
-    d_m, r_m, t_m = run_strategy(panel, calendar, nifty_close, mid, "12-1", TOP_N)
-    robust = summarize("12-1 top 30, rebalanced mid-month", d_m, r_m, t_m, r_um)
-    robust["universe_cagr"] = summarize("u", d_um, r_um)["cagr"]
-    return {"period": [d_u[0], d_u[-1]] if d_u else [None, None], "months": len(r_u), "variants": variants, "robustness": robust}
+        if n == 30 and not rf:
+            h = len(r) // 2
+            split[strat] = [{"period": [d[sl][0], d[sl][-1]], **{k: v for k, v in summarize("", d[sl], r[sl], t[sl], r_u[sl]).items()
+                                                               if k in ("cagr", "excess", "t", "mdd")}}
+                            for sl in (slice(0, h), slice(h, None))]
+    # robustness: rebalance 5 / 10 / 15 sessions after month end
+    robust = []
+    for off in (5, 10, 15):
+        mid = [k + off for k in ends if k + off < last - 1]
+        d_um, r_um, _ = run_strategy(panel, calendar, nifty_close, mid, "universe", 0)
+        row = {"offset": off, "universe_cagr": summarize("u", d_um, r_um)["cagr"]}
+        for strat in STRATEGIES:
+            d_m, r_m, t_m = run_strategy(panel, calendar, nifty_close, mid, strat, TOP_N)
+            sm = summarize("", d_m, r_m, t_m, r_um)
+            row[strat] = {k: sm[k] for k in ("cagr", "excess", "t", "mdd")}
+        robust.append(row)
+    return {"period": [d_u[0], d_u[-1]] if d_u else [None, None], "months": len(r_u), "variants": variants,
+            "robustness": robust, "split_half": split}
 
 
-def current_portfolio(panel, calendar, info: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def current_portfolio(panel, calendar, info: dict[str, dict[str, Any]], strategy: str = PRIMARY) -> dict[str, Any]:
     ends = month_ends(calendar)
     if not ends:
         return {}
     k = ends[-1]
-    picks, uni, sc = pick(panel, k, "12-1", TOP_N)
-    prev_picks = pick(panel, ends[-2], "12-1", TOP_N)[0] if len(ends) > 1 else []
+    picks, uni, sc = pick(panel, k, strategy, TOP_N)
+    prev_picks = pick(panel, ends[-2], strategy, TOP_N)[0] if len(ends) > 1 else []
     last = len(calendar) - 1
     # "if rebalanced today": ranking on the latest close (watch only)
-    today_picks, _, today_sc = pick(panel, last, "12-1", TOP_N)
+    today_picks, _, today_sc = pick(panel, last, strategy, TOP_N)
     today_rank = {sym: i + 1 for i, sym in enumerate(sorted(today_sc, key=lambda x: -today_sc[x]))}
     rows = []
     for rank, sym in enumerate(picks, 1):
         s = panel[sym]
         r = period_return(s, k, last, last) if k + 1 <= last else NAN
+        r12, r6, vol = score_12_1(s, k), score_6_1(s, k), vol_252(s, k)
         rows.append({"rank": rank, "s": sym, "n": info.get(sym, {}).get("name", ""), "ind": info.get(sym, {}).get("industry", ""),
-                     "cap": info.get(sym, {}).get("cap", ""), "score": round(sc[sym] * 100, 1),
-                     "r6_1": round(score_6_1(s, k) * 100, 1) if not math.isnan(score_6_1(s, k)) else None,
-                     "vol": round(vol_252(s, k) * 100, 1) if not math.isnan(vol_252(s, k)) else None,
+                     "cap": info.get(sym, {}).get("cap", ""), "score": round(sc[sym], 2) if strategy == "nse" else round(sc[sym] * 100, 1),
+                     "r12_1": round(r12 * 100, 1) if not math.isnan(r12) else None,
+                     "r6_1": round(r6 * 100, 1) if not math.isnan(r6) else None,
+                     "vol": round(vol * 100, 1) if not math.isnan(vol) else None,
                      "close": round(s.last_valid(s.px, last), 2), "since": round(r * 100, 2) if not math.isnan(r) else None,
                      "rank_today": today_rank.get(sym)})
-    return {"formed_on": calendar[k], "effective_from": calendar[k + 1] if k + 1 <= last else None, "as_of": calendar[last],
+    return {"strategy": strategy, "label": STRATEGIES[strategy]["label"], "score_def": STRATEGIES[strategy]["score"],
+            "formed_on": calendar[k], "effective_from": calendar[k + 1] if k + 1 <= last else None, "as_of": calendar[last],
             "universe": len(uni), "picks": rows, "adds": [x for x in picks if x not in prev_picks],
             "drops": [x for x in prev_picks if x not in picks],
             "watch_today": {"adds": [x for x in today_picks if x not in picks], "drops": [x for x in picks if x not in today_picks]}}
@@ -300,7 +326,7 @@ def paper_log(panel, calendar, nifty_close, folder: Path, portfolio: dict[str, A
     if portfolio and portfolio["formed_on"] >= PAPER_START:
         path = folder / f"{portfolio['formed_on'][:7]}.json"
         if not path.exists():
-            path.write_text(json.dumps({"formed_on": portfolio["formed_on"], "rule": "12-1 momentum, top 30, equal weight",
+            path.write_text(json.dumps({"formed_on": portfolio["formed_on"], "rule": portfolio.get("label", ""),
                                         "symbols": [p["s"] for p in portfolio["picks"]]}, indent=1) + "\n", encoding="utf-8")
     cidx = {d: k for k, d in enumerate(calendar)}
     ends = month_ends(calendar)
@@ -333,9 +359,13 @@ def run(data: dict[str, dict[str, tuple]], info: dict[str, dict[str, Any]], fold
         return None
     nifty_close = [nifty[d][3] for d in calendar]
     panel = build_panel(data, calendar)
-    portfolio = current_portfolio(panel, calendar, info)
-    return {"rules": {"score": "12-1 momentum: return from 252 to 21 sessions ago", "top_n": TOP_N, "rebalance": "last session of each month; trade next open",
+    portfolios = {k: current_portfolio(panel, calendar, info, k) for k in STRATEGIES}
+    paper = {k: paper_log(panel, calendar, nifty_close, folder / k, portfolios[k]) for k in STRATEGIES}
+    return {"rules": {"primary": PRIMARY, "strategies": STRATEGIES, "top_n": TOP_N,
+                      "rebalance": "last session of each month; trade next open",
                       "universe": "20-session avg turnover >= Rs 5 cr, close >= Rs 20, >= 252 sessions history, traded >= 90% of last 252 sessions",
-                      "cost_per_side_pct": COST_SIDE * 100, "paper_start": PAPER_START},
-            "portfolio": portfolio, "evidence": evidence(panel, calendar, nifty_close),
-            "paper": paper_log(panel, calendar, nifty_close, folder, portfolio)}
+                      "cost_per_side_pct": COST_SIDE * 100, "paper_start": PAPER_START,
+                      "selection_note": ("12-1 was specified first. NSE-style was made primary after the 2014-2026 test because it was "
+                                         "significant in both halves of the sample with smaller drawdowns; both are frozen monthly so "
+                                         "the forward record decides without hindsight.")},
+            "portfolios": portfolios, "evidence": evidence(panel, calendar, nifty_close), "paper": paper}

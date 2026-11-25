@@ -740,7 +740,7 @@
     const y = v => padT + (hi - Math.log(v)) / ((hi - lo) || 1) * (h - padT - padB);
     const muted = css("--muted2") || "#6f7f9b";
     ctx.font = "10px Inter, system-ui, sans-serif"; ctx.textBaseline = "middle";
-    const ticks = [0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16].filter(t => Math.log(t) >= lo - 0.05 && Math.log(t) <= hi + 0.05);
+    const ticks = [0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128].filter(t => Math.log(t) >= lo - 0.05 && Math.log(t) <= hi + 0.05);
     ticks.forEach(t => { ctx.strokeStyle = "#25334c"; ctx.globalAlpha = t === 1 ? 0.9 : 0.45; ctx.beginPath(); ctx.moveTo(padL, y(t)); ctx.lineTo(w - padR, y(t)); ctx.stroke(); ctx.globalAlpha = 1; ctx.fillStyle = muted; ctx.fillText(`${t}×`, 6, y(t)); });
     let lastYear = "";
     series[0].curve.forEach((p, i) => { const yr = p[0].slice(0, 4); if (yr !== lastYear) { lastYear = yr; ctx.fillStyle = muted; ctx.fillText(yr, x(i) - 10, h - 8); } });
@@ -751,9 +751,14 @@
     const host = $("#mxMomentumBody");
     host.innerHTML = `<div class="empty-state">Loading momentum portfolio…</div>`;
     Promise.all([loadMomentum(), load().catch(() => null)]).then(([m]) => {
-      const p = m.portfolio || {}, ev = m.evidence || {}, V = ev.variants || [];
-      const primary = V.find(v => v.id === "12-1-30"), uni = V.find(v => v.name.startsWith("Equal-weight")), nifty = V.find(v => v.name.startsWith("NIFTY"));
-      const regime = V.find(v => v.id === "12-1-30-regime");
+      const strategies = m.rules?.strategies || { "12-1": { label: "12-1 momentum, top 30" } };
+      const strat = S.momStrat && strategies[S.momStrat] ? S.momStrat : (m.rules?.primary || Object.keys(strategies)[0]);
+      const p = (m.portfolios || {})[strat] || m.portfolio || {}, ev = m.evidence || {}, V = ev.variants || [];
+      const primary = V.find(v => v.id === `${strat}-30`), uni = V.find(v => v.name.startsWith("Equal-weight")), nifty = V.find(v => v.name.startsWith("NIFTY"));
+      const regime = V.find(v => v.id === `${strat}-30-regime`);
+      const paper = m.paper && !Array.isArray(m.paper) ? (m.paper[strat] || []) : (m.paper || []);
+      const robust = Array.isArray(ev.robustness) ? ev.robustness : [];
+      const halves = (ev.split_half || {})[strat] || [];
       const cap = planCapital(), per = cap / (m.rules?.top_n || 30);
       const live = id => S.bySym?.get(id);
       const sgn = x => isNum(x) ? `${x > 0 ? "+" : ""}${nf(x, 1)}%` : "—";
@@ -761,6 +766,8 @@
       host.innerHTML = `
         <div class="notice notice-info"><span class="notice-symbol">i</span><div><strong>How to use this</strong>
           <p>On the last trading day of each month the portfolio is re-formed from that day's close. Buy the listed stocks in equal amounts at the next session's open and hold until the next month-end. ${esc(m.rules?.universe || "")}. Costs of ${nf(m.rules?.cost_per_side_pct, 3)}% per side are included in all results.</p></div></div>
+        <div class="mx-mom-switch"><div class="tab-group" id="mxMomTabs">${Object.entries(strategies).map(([id, s]) => `<button class="tab ${id === strat ? "active" : ""}" data-strat="${esc(id)}">${esc(s.label)}${id === m.rules?.primary ? " · primary" : ""}</button>`).join("")}</div>
+          <p class="small-note">${esc(strategies[strat]?.score || "")}. ${m.rules?.selection_note ? esc(m.rules.selection_note) : ""}</p></div>
         <div class="metric-grid">
           <article class="metric-card"><div class="metric-top"><span>PORTFOLIO FORMED</span><span class="metric-icon green">↗</span></div><div class="metric-value mx-small-value">${esc(p.formed_on || "—")}</div><div class="metric-foot"><span class="metric-muted">Effective from ${esc(p.effective_from || "next session")}</span><span class="metric-tag neutral">${p.universe || 0} stocks eligible</span></div></article>
           <article class="metric-card"><div class="metric-top"><span>NEXT REBALANCE</span><span class="metric-icon blue">◷</span></div><div class="metric-value mx-small-value">${esc(p.as_of ? nextRebalance(p.as_of, p.formed_on) : "—")}</div><div class="metric-foot"><span class="metric-muted">Last trading day of the month</span><span class="metric-tag neutral">Data ${esc(p.as_of || "")}</span></div></article>
@@ -771,35 +778,40 @@
           <p>Equal weight of ₹${nf(per, 0)} each from your ₹${nf(cap, 0)} capital setting (change it in Overview). "Since entry" runs from the ${esc(p.effective_from || "")} open to the latest close.</p></div>
           <button class="button button-small button-secondary" id="mxMomCsv">↓ CSV</button></div>
           <div class="mx-mom-changes"><span><b>New this month:</b> ${(p.adds || []).map(chip).join(" ") || "none"}</span><span><b>Dropped:</b> ${(p.drops || []).map(esc).join(", ") || "none"}</span></div>
-          <div class="table-wrap"><table class="mx-table"><thead><tr><th class="num">#</th><th>STOCK</th><th>INDUSTRY</th><th class="num">12-1 RETURN</th><th class="num">6-1</th><th class="num">1Y VOL</th><th class="num">CLOSE</th><th class="num">SINCE ENTRY</th><th class="num">RANK TODAY</th><th class="num">QTY</th></tr></thead>
+          <div class="table-wrap"><table class="mx-table"><thead><tr><th class="num">#</th><th>STOCK</th><th>INDUSTRY</th><th class="num">${strat === "nse" ? "SCORE (Z)" : "12-1 RETURN"}</th>${strat === "nse" ? `<th class="num">12-1</th>` : ""}<th class="num">6-1</th><th class="num">1Y VOL</th><th class="num">CLOSE</th><th class="num">SINCE ENTRY</th><th class="num">RANK TODAY</th><th class="num">QTY</th></tr></thead>
           <tbody>${(p.picks || []).map(r => `<tr><td class="num">${r.rank}</td><td><button class="mx-sym" data-sym="${esc(r.s)}">${esc(r.s)}</button><small>${esc(r.n || live(r.s)?.n || "")}</small></td>
-            <td>${esc(r.ind || live(r.s)?.ind || "")}</td><td class="num">${pct(r.score, 1)}</td><td class="num">${pct(r.r6_1, 1)}</td><td class="num">${isNum(r.vol) ? nf(r.vol, 0) + "%" : "—"}</td>
+            <td>${esc(r.ind || live(r.s)?.ind || "")}</td><td class="num">${strat === "nse" ? nf(r.score, 2) : pct(r.score, 1)}</td>${strat === "nse" ? `<td class="num">${pct(r.r12_1, 1)}</td>` : ""}<td class="num">${pct(r.r6_1, 1)}</td><td class="num">${isNum(r.vol) ? nf(r.vol, 0) + "%" : "—"}</td>
             <td class="num">${nf(r.close)}</td><td class="num">${pct(r.since)}</td><td class="num">${r.rank_today ? (r.rank_today <= 30 ? r.rank_today : `<span class="down">${r.rank_today}</span>`) : `<span class="down">out</span>`}</td>
             <td class="num">${r.close ? Math.floor(per / r.close).toLocaleString("en-IN") : "—"}</td></tr>`).join("")}</tbody></table></div>
           <p class="small-note">If rebalanced on today's close (watch only; act at month-end): would add ${(p.watch_today?.adds || []).map(esc).join(", ") || "none"}; would drop ${(p.watch_today?.drops || []).map(esc).join(", ") || "none"}.</p></section>
         <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Backtest: growth of ₹1</h2><p>${esc(ev.period?.[0] || "")} to ${esc(ev.period?.[1] || "")} · ${ev.months || 0} monthly rebalances · log scale · stocks that later delisted included</p></div>
-          <div class="mx-legend"><span><i style="background:var(--green)"></i>12-1 top 30</span><span><i style="background:var(--amber)"></i>with regime filter</span><span><i style="background:var(--blue)"></i>Equal-weight universe</span><span><i class="dash"></i>NIFTY 50</span></div></div>
+          <div class="mx-legend"><span><i style="background:var(--green)"></i>${esc(p.label || strategies[strat]?.label || "")}</span><span><i style="background:var(--amber)"></i>with regime filter</span><span><i style="background:var(--blue)"></i>Equal-weight universe</span><span><i class="dash"></i>NIFTY 50</span></div></div>
           <div class="mx-chart-wrap"><canvas id="mxMomChart" aria-label="Momentum backtest equity curves" role="img"></canvas></div></section>
         <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Strategy comparison</h2><p>Monthly returns after costs. Edge = annualised average monthly return above the equal-weight universe; t below 2 means the edge is not statistically established.</p></div></div>
           <div class="table-wrap"><table class="mx-table"><thead><tr><th>STRATEGY</th><th class="num">CAGR</th><th class="num">VOLATILITY</th><th class="num">SHARPE</th><th class="num">MAX DRAWDOWN</th><th class="num">EDGE VS UNIVERSE</th><th class="num">T-STAT</th><th class="num">MONTHS BEATEN</th><th class="num">TURNOVER/MO</th></tr></thead>
-          <tbody>${V.map(v => `<tr class="${v.id === "12-1-30" ? "mx-selected" : ""}"><td>${esc(v.name)}</td><td class="num">${nf(v.cagr, 1)}%</td><td class="num">${nf(v.vol, 1)}%</td><td class="num">${nf(v.sharpe, 2)}</td>
+          <tbody>${V.map(v => `<tr class="${v.id === `${strat}-30` ? "mx-selected" : ""}"><td>${esc(v.name)}</td><td class="num">${nf(v.cagr, 1)}%</td><td class="num">${nf(v.vol, 1)}%</td><td class="num">${nf(v.sharpe, 2)}</td>
             <td class="num down">${nf(v.mdd, 1)}%</td><td class="num">${isNum(v.excess) ? pct(v.excess, 1) : "—"}</td><td class="num">${isNum(v.t) ? nf(v.t, 2) : "—"}</td>
             <td class="num">${isNum(v.beat) ? nf(v.beat, 0) + "%" : "—"}</td><td class="num">${isNum(v.turnover) ? nf(v.turnover, 0) + "%" : "—"}</td></tr>`).join("")}</tbody></table></div>
-          ${ev.robustness ? `<p class="small-note">Timing check: the same 12-1 top-30 rule rebalanced 10 sessions after month-end returned ${nf(ev.robustness.cagr, 1)}% a year vs ${nf(ev.robustness.universe_cagr, 1)}% for the universe (edge ${pct(ev.robustness.excess, 1)}/yr, t ${nf(ev.robustness.t, 2)}).</p>` : ""}
+          ${robust.length || halves.length ? `<h3 class="mx-subhead">Robustness checks · ${esc(strategies[strat]?.label || "")}</h3>
+          <div class="table-wrap"><table class="mx-table"><thead><tr><th>CHECK</th><th class="num">CAGR</th><th class="num">EDGE VS UNIVERSE</th><th class="num">T-STAT</th><th class="num">MAX DRAWDOWN</th></tr></thead><tbody>
+          ${robust.filter(r => r[strat]).map(r => `<tr><td>Rebalance ${r.offset} sessions after month-end (universe ${nf(r.universe_cagr, 1)}%)</td><td class="num">${nf(r[strat].cagr, 1)}%</td><td class="num">${pct(r[strat].excess, 1)}</td><td class="num">${nf(r[strat].t, 2)}</td><td class="num down">${nf(r[strat].mdd, 1)}%</td></tr>`).join("")}
+          ${halves.map((h, i) => `<tr><td>${i ? "Second" : "First"} half: ${esc(h.period[0])} to ${esc(h.period[1])}</td><td class="num">${nf(h.cagr, 1)}%</td><td class="num">${pct(h.excess, 1)}</td><td class="num">${nf(h.t, 2)}</td><td class="num down">${nf(h.mdd, 1)}%</td></tr>`).join("")}
+          </tbody></table></div>` : ""}
           <h3 class="mx-subhead">Calendar-year returns</h3>
           <div class="table-wrap"><table class="mx-table"><thead><tr><th>STRATEGY</th>${Object.keys(primary?.by_year || {}).map(yr => `<th class="num">${esc(yr)}</th>`).join("")}</tr></thead>
           <tbody>${V.map(v => `<tr><td>${esc(v.name)}</td>${Object.keys(primary?.by_year || {}).map(yr => `<td class="num">${pct(v.by_year?.[yr], 1)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></section>
         <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Paper-trading record</h2><p>Each month's portfolio is frozen to the repository on the day it is formed (from ${esc(m.rules?.paper_start || "")}) and never recomputed, so this is genuine out-of-sample evidence.</p></div></div>
-          ${(m.paper || []).length ? `<div class="table-wrap"><table class="mx-table"><thead><tr><th>FORMED</th><th>STATUS</th><th class="num">PORTFOLIO</th><th class="num">EQUAL-WEIGHT UNIVERSE</th><th class="num">NIFTY 50</th><th class="num">VS UNIVERSE</th></tr></thead>
-          <tbody>${m.paper.map(r => `<tr><td>${esc(r.formed_on)}</td><td>${r.complete ? "Closed" : "Open, through " + esc(r.through)}</td><td class="num">${pct(r.portfolio)}</td><td class="num">${pct(r.universe)}</td><td class="num">${pct(r.nifty)}</td>
+          ${paper.length ? `<div class="table-wrap"><table class="mx-table"><thead><tr><th>FORMED</th><th>STATUS</th><th class="num">PORTFOLIO</th><th class="num">EQUAL-WEIGHT UNIVERSE</th><th class="num">NIFTY 50</th><th class="num">VS UNIVERSE</th></tr></thead>
+          <tbody>${paper.map(r => `<tr><td>${esc(r.formed_on)}</td><td>${r.complete ? "Closed" : "Open, through " + esc(r.through)}</td><td class="num">${pct(r.portfolio)}</td><td class="num">${pct(r.universe)}</td><td class="num">${pct(r.nifty)}</td>
             <td class="num">${isNum(r.portfolio) && isNum(r.universe) ? pct(r.portfolio - r.universe) : "—"}</td></tr>`).join("")}</tbody></table></div>`
             : `<div class="empty-state">The first frozen portfolio will be recorded at the ${esc(p.as_of ? nextRebalance(p.as_of, p.formed_on) : "next month-end")} close. Results appear here from then on.</div>`}</section>
         <div class="notice notice-warning"><span class="notice-symbol">!</span><div><strong>Before putting money into this</strong>
           <p>The edge over the equal-weight universe has a t-statistic of ${primary?.t ?? "—"} (below 2 = not statistically established). Expect drawdowns around ${primary ? nf(primary.mdd, 0) : "—"}% and losing years. Monthly turnover makes most gains short-term capital gains (20%) rather than long-term (12.5%), which narrows the after-tax edge. Results exclude dividends and assume delisted stocks could be sold at their last price. Paper trade it for several months first; this is research, not advice.</p></div></div>`;
+      $("#mxMomTabs")?.addEventListener("click", e => { const t = e.target.closest("[data-strat]"); if (!t) return; S.momStrat = t.dataset.strat; renderMomentum(); });
       $("#mxMomCsv").addEventListener("click", () => {
-        const head = ["rank", "symbol", "name", "industry", "score_12_1_pct", "r6_1_pct", "vol_pct", "close", "qty"];
-        const csv = [head.join(","), ...(p.picks || []).map(r => [r.rank, r.s, `"${(r.n || "").replace(/"/g, '""')}"`, `"${(r.ind || "").replace(/"/g, '""')}"`, r.score, r.r6_1 ?? "", r.vol ?? "", r.close, Math.floor(per / r.close)].join(","))].join("\n");
-        const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: `momentum-${p.formed_on}.csv` });
+        const head = ["rank", "symbol", "name", "industry", strat === "nse" ? "score_z" : "score_12_1_pct", "r12_1_pct", "r6_1_pct", "vol_pct", "close", "qty"];
+        const csv = [head.join(","), ...(p.picks || []).map(r => [r.rank, r.s, `"${(r.n || "").replace(/"/g, '""')}"`, `"${(r.ind || "").replace(/"/g, '""')}"`, r.score, r.r12_1 ?? "", r.r6_1 ?? "", r.vol ?? "", r.close, Math.floor(per / r.close)].join(","))].join("\n");
+        const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: `momentum-${strat}-${p.formed_on}.csv` });
         document.body.append(a); a.click(); a.remove();
       });
       const curves = [nifty && { curve: nifty.curve, color: "#91a0ba", dash: [4, 3] }, uni && { curve: uni.curve, color: css("--blue") || "#7aa7ff" },

@@ -74,9 +74,34 @@ Limits:
 
 Treat verdicts as directional evidence, and re-check them as history accumulates. The verdicts recompute on every run.
 
+### Momentum portfolio
+
+The **Momentum portfolio** page (`.github/scripts/momentum.py`) is the one strategy here with long-run evidence. The rules:
+
+- Rebalance on the last trading session of each month, and buy at the next session's open.
+- Universe: 20-session average turnover of at least ₹5 cr, close of at least ₹20, a year of history, traded on at least 90% of sessions.
+- Hold the top 30 by score, equal weight, with 0.125% cost per side.
+
+Two scores are tracked. **NSE-style** (primary) is the mean z-score of the 6- and 12-month return divided by 1-year volatility, the NIFTY Momentum index method. **12-1** is the return from 12 months to 1 month ago. 12-1 was specified first. NSE-style was made primary after the full test because it was significant in both halves of the sample, with smaller drawdowns.
+
+Backtest from Feb 2014 to Nov 2026 (154 rebalances, delisted stocks included):
+
+| Strategy | CAGR | Max drawdown | Edge vs equal-weight universe |
+|---|---|---|---|
+| NSE-style top 30 | 30.2% | −37% | +12.4%/yr, t = 3.45 |
+| 12-1 top 30 | 26.0% | −44% | +9.8%/yr, t = 2.63 |
+| Equal-weight universe | 16.0% | −50% | — |
+| NIFTY 50 price index | 11.9% | −29% | — |
+
+The edge holds across rebalance timing (t = 2.5–3.6 for 5, 10 and 15 sessions after month-end). NSE-style is significant in both halves.
+
+**Paper log:** from the 30 Nov 2026 close, both portfolios are frozen each month to `data/momentum/portfolios/<strategy>/YYYY-MM.json` and never recomputed. The page reports their realised returns as an out-of-sample record.
+
+**Caveats:** drawdowns of 35–45% and losing years (2016, 2018, 2025). Short-term capital gains tax (20%) applies to most gains. Dividends are excluded, and delisted holdings are assumed sold at their last price.
+
 ### Multi-year research archive
 
-`data/history.csv` keeps a rolling ~320 sessions for the live screen. Backtests need several market regimes, so older sessions live in write-once monthly files, `data/archive/YYYY-MM.csv.gz` (same columns, NIFTY 50 included), from January 2021.
+`data/history.csv` keeps a rolling ~320 sessions for the live screen. Backtests need several market regimes, so older sessions live in write-once monthly files, `data/archive/YYYY-MM.csv.gz` (same columns, NIFTY 50 included), from January 2013.
 
 - The data comes from NSE's CM-UDiFF bhavcopy (2024 onwards) and the older `cmDDMONYYYYbhav.csv` format (before 2024).
 - The archive includes stocks that later delisted, so it suffers less survivorship bias than the live universe.
@@ -86,7 +111,7 @@ Treat verdicts as directional evidence, and re-check them as history accumulates
 To rebuild or extend the archive (about 35 seconds per month):
 
 ```bash
-python .github/scripts/archive_nse.py backfill 2021-01 2025-09
+python .github/scripts/archive_nse.py backfill 2013-01 2025-09
 ```
 
 The evidence on the Scans page and in the scanner banner is computed over archive plus history, one symbol at a time. It reports:
