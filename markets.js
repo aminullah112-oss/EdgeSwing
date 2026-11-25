@@ -768,7 +768,7 @@
           <article class="metric-card"><div class="metric-top"><span>WORST DRAWDOWN</span><span class="metric-icon amber">▼</span></div><div class="metric-value">${primary ? nf(primary.mdd, 1) + "%" : "—"}</div><div class="metric-foot"><span class="metric-muted">Edge vs universe ${primary ? sgn(primary.excess) : "—"}/yr · t ${primary?.t ?? "—"}</span><span class="metric-tag ${primary && primary.t >= 2 ? "positive" : "neutral"}">${primary && primary.t >= 2 ? "Significant" : "Not yet significant"}</span></div></article>
         </div>
         <section class="panel mx-panel"><div class="panel-toolbar"><div><h2>Current portfolio · ${(p.picks || []).length} stocks</h2>
-          <p>Equal weight of ${cr(per / 1e7)} each from your ₹${nf(cap, 0)} capital setting (change it in Overview). "Since entry" runs from the ${esc(p.effective_from || "")} open to the latest close.</p></div>
+          <p>Equal weight of ₹${nf(per, 0)} each from your ₹${nf(cap, 0)} capital setting (change it in Overview). "Since entry" runs from the ${esc(p.effective_from || "")} open to the latest close.</p></div>
           <button class="button button-small button-secondary" id="mxMomCsv">↓ CSV</button></div>
           <div class="mx-mom-changes"><span><b>New this month:</b> ${(p.adds || []).map(chip).join(" ") || "none"}</span><span><b>Dropped:</b> ${(p.drops || []).map(esc).join(", ") || "none"}</span></div>
           <div class="table-wrap"><table class="mx-table"><thead><tr><th class="num">#</th><th>STOCK</th><th>INDUSTRY</th><th class="num">12-1 RETURN</th><th class="num">6-1</th><th class="num">1Y VOL</th><th class="num">CLOSE</th><th class="num">SINCE ENTRY</th><th class="num">RANK TODAY</th><th class="num">QTY</th></tr></thead>
