@@ -9,7 +9,7 @@ A static GitHub Pages front end plus a scheduled Python ingestion and screening 
 ## What is automated
 
 1. **Historical bootstrap:** on the first run (or when stored history has fewer than 205 equity sessions), the workflow tries to backfill up to 260 recent NSE sessions.
-2. **Scheduled update:** the workflow runs Monday–Friday at approximately **20:30 Asia/Kolkata**. GitHub Actions can be delayed, and an NSE archive may not yet be published when the job starts.
+2. **Scheduled update:** the workflow runs Monday–Friday at **21:17 IST** (15:47 UTC), with a retry at **01:17 IST** (19:47 UTC). GitHub schedules in UTC and can start runs late; an NSE archive may also be published late, which the retry covers.
 3. **Official cash-equity source:** downloads NSE CM-UDiFF Common Bhavcopy ZIP files and retains EQ-series rows only. Common non-EQ series are excluded.
 4. **ETF exclusion:** refreshes the official NSE "Securities available for trading in ETF" CSV and removes those symbols from stored history before screening. A committed cache/curated fallback is used if NSE's ETF-list endpoint is temporarily unavailable; the run warning identifies fallback use. This prevents liquid, gold and index ETFs from being mistaken for individual company stocks.
 5. **Benchmark:** separately attempts to obtain NIFTY 50 historical index OHLC through NSE's historical index endpoint. If unavailable, relative-strength signals are disabled; breakout and pullback can still be evaluated.

@@ -19,9 +19,13 @@ on:
       - '.github/workflows/refresh-edge-nse.yml'
       - 'tests/**'
   schedule:
-    # After the NSE cash-market close and typical end-of-day report publication.
-    - cron: "30 20 * * 1-5"
-      timezone: "Asia/Kolkata"
+    # GitHub reads these times as UTC (a timezone key is not applied here).
+    # 15:47 UTC = 21:17 IST, after NSE publishes the end-of-day bhavcopy.
+    # 19:47 UTC = 01:17 IST is a retry in case the first run is delayed or NSE publishes late;
+    # the job is idempotent, so a second run on the same data changes nothing.
+    # Off-the-hour minutes avoid GitHub's busiest (most delayed) scheduling slots.
+    - cron: "47 15 * * 1-5"
+    - cron: "47 19 * * 1-5"
   workflow_dispatch:
     inputs:
       force_backfill:
