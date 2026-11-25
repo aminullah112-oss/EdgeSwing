@@ -372,10 +372,10 @@ def stock_key(symbol: str, used: set[str]) -> str:
     return key
 
 
-def research_evidence(history: list[dict[str, Any]]) -> dict[str, Any] | None:
+def research_evidence(history: list[dict[str, Any]], data: dict[str, dict[str, tuple]] | None = None) -> dict[str, Any] | None:
     """Backtest every scan over the multi-year archive plus current history, one symbol at a time."""
     import archive_nse
-    data = archive_nse.load_by_symbol(history)
+    data = data if data is not None else archive_nse.load_by_symbol(history)
     bench = data.get(BENCHMARK, {})
     bench_close = {d: v[3] for d, v in bench.items()}
     if len(bench_close) < 60:
@@ -644,8 +644,17 @@ def main(argv: list[str]) -> int:
     known = {r["symbol"] for r in history if not r["symbol"].startswith("NIFTY")}
     fundamentals, fund_warnings, fund_as_of = load_fundamentals(known, equity_list, constituents)
     warnings += fund_warnings
-    evidence = research_evidence(history)
+    import archive_nse
+    import momentum
+    research_data = archive_nse.load_by_symbol(history)
+    evidence = research_evidence(history, research_data)
     summary = build(history, constituents, out_dir, source, warnings, equity_list, fundamentals, fund_as_of, evidence)
+    info = {r["symbol"]: {"name": r["name"]} for r in equity_list}
+    for sym, c in constituents.items():
+        info[sym] = {"name": c.get("name") or info.get(sym, {}).get("name", ""), "industry": c.get("industry", ""), "cap": c.get("cap", "")}
+    mom = momentum.run(research_data, info, ROOT / "data" / "momentum" / "portfolios")
+    if mom:
+        write_compact(out_dir / "momentum.json", mom)
     print(json.dumps({k: summary[k] for k in ("latest_market_date", "sessions", "symbols", "classified_symbols",
                                               "stale_symbols", "classification_source", "fundamentals", "bytes")}, indent=2))
     annotate_screen(out_dir / "snapshot.json", core.SCREEN_PATH)

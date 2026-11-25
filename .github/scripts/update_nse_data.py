@@ -258,7 +258,8 @@ def read_nifty_daily_csv(content: bytes, source_date: dt.date) -> list[dict[str,
     for original in reader:
         row = {clean_header(k): (v or "").strip() for k, v in original.items() if k is not None}
         name = str(row.get("indexname") or row.get("index") or row.get("indexname1") or "").strip().upper()
-        if name.replace(" ", "") not in {"NIFTY50", "NIFTY50PR"}:
+        # "CNX Nifty" / "S&P CNX Nifty" are the pre-November-2015 names of NIFTY 50 in NSE's archives.
+        if name.replace(" ", "") not in {"NIFTY50", "NIFTY50PR", "CNXNIFTY", "S&PCNXNIFTY"}:
             continue
         date = iso_date(row.get("indexdate") or row.get("date") or row.get("timestamp")) or source_date.isoformat()
         bar = {

@@ -26,6 +26,7 @@
       </nav>
       <div class="workspace-label nav-section-label">MARKET EXPLORER</div>
       <nav class="nav-list" aria-label="Market explorer">
+        <button class="nav-item" data-view="momentum"><span class="nav-icon">↗</span> Momentum portfolio</button>
         <button class="nav-item" data-view="markets"><span class="nav-icon">◔</span> Markets</button>
         <button class="nav-item" data-view="stock"><span class="nav-icon">◫</span> Stock analysis</button>
         <button class="nav-item" data-view="scans"><span class="nav-icon">≡</span> Scans</button>
@@ -152,6 +153,12 @@
           <section class="panel data-status-panel"><div class="panel-heading"><div><h2>Data health</h2><p>Structural checks only</p></div><span class="mini-label" id="dataHealthBadge">DEMO</span></div><div class="data-kpis"><div><span>Rows loaded</span><strong id="dataRows">1,280</strong></div><div><span>Symbols</span><strong id="dataSymbols">4</strong></div><div><span>Start date</span><strong id="dataStart">2023-01-02</strong></div><div><span>End date</span><strong id="dataEnd">2024-03-22</strong></div></div><div class="validation-list" id="validationList"><div class="validation-item"><span class="validation-icon">!</span><span>Source authenticity not verified</span><small>Warning</small></div><div class="validation-item"><span class="validation-icon">!</span><span>Corporate-action adjustments unknown</span><small>Warning</small></div><div class="validation-item"><span class="validation-icon">!</span><span>Point-in-time universe unknown</span><small>Warning</small></div></div></section></div>
           <section class="panel research-panel"><div class="panel-heading"><div><h2>Research protocol</h2><p>Required before interpreting any results</p></div><span class="mini-label">VALIDATION</span></div><div class="protocol-grid"><div><span class="protocol-num">01</span><h3>Reproduce control</h3><p>Reproduce the existing EDGE strategy and preserve its exact universe and assumptions.</p></div><div><span class="protocol-num">02</span><h3>Walk-forward test</h3><p>Use chronological splits and keep a final holdout untouched until rules are frozen.</p></div><div><span class="protocol-num">03</span><h3>Model real costs</h3><p>Include taxes, charges, spread, slippage, gaps and plausible fills.</p></div><div><span class="protocol-num">04</span><h3>Paper-trade</h3><p>Reconcile timestamped signals and simulated fills with executable prices.</p></div></div><div class="gate-warning">This static website does not reproduce the Python backtest engine. Use the separate Python project for full research simulations.</div></section>
           <footer class="page-footer"><span>EDGE NSE <b>·</b> Data-first research</span><span>All imported files are processed in your browser.</span></footer>
+        </section>
+
+        <section class="view" id="view-momentum">
+          <div class="page-heading"><div><div class="eyebrow">MONTHLY MOMENTUM · TOP 30 · EQUAL WEIGHT</div><h1>Momentum portfolio<span class="heading-period">.</span></h1><p class="subheading">The one strategy in EdgeSwing with long-run evidence: this month's portfolio, the full backtest and a frozen paper-trading record.</p></div></div>
+          <div id="mxMomentumBody"></div>
+          <footer class="page-footer"><span>EDGE NSE <b>·</b> Research and paper trading</span><span>Not investment advice · no orders are placed</span></footer>
         </section>
 
         <section class="view" id="view-markets">
