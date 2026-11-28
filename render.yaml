@@ -1,0 +1,33 @@
+# ARR Market Intelligence backend. Secrets are entered in the Render dashboard, never here.
+services:
+  - type: web
+    name: arr-market-intelligence
+    runtime: python
+    plan: starter          # paid: stays awake and can mount a disk
+    region: singapore
+    rootDir: arr-market-intelligence
+    buildCommand: pip install -r requirements.txt
+    # One worker only: the Kite session, ticker and scheduler live in process memory.
+    startCommand: uvicorn backend.app:app --host 0.0.0.0 --port $PORT --workers 1 --no-access-log
+    healthCheckPath: /api/health
+    disk:
+      name: arr-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: TZ
+        value: Asia/Kolkata
+      - key: DATABASE_PATH
+        value: /var/data/market.db
+      - key: FRONTEND_URL
+        value: https://aminullah112-oss.github.io/EdgeSwing/arr-market-intelligence/
+      - key: ALLOWED_ORIGINS
+        value: https://aminullah112-oss.github.io
+      - key: APP_ACCESS_KEY
+        generateValue: true
+      - key: KITE_API_KEY
+        sync: false
+      - key: KITE_API_SECRET
+        sync: false

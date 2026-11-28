@@ -18,6 +18,7 @@ on:
       - 'data/fundamentals.csv'
       - '.github/workflows/refresh-edge-nse.yml'
       - 'tests/**'
+      - 'arr-market-intelligence/frontend/**'
   schedule:
     # GitHub reads these times as UTC (a timezone key is not applied here).
     # 15:47 UTC = 21:17 IST, after NSE publishes the end-of-day bhavcopy.
@@ -104,6 +105,8 @@ jobs:
           mkdir -p _site/assets _site/data
           cp index.html app.js markets.js styles.css .nojekyll _site/
           cp -R assets/. _site/assets/
+          mkdir -p _site/arr-market-intelligence
+          cp -R arr-market-intelligence/frontend/. _site/arr-market-intelligence/
           cp data/latest_screen.json _site/data/latest_screen.json
           if [ -f data/market/snapshot.json ]; then cp -R data/market _site/data/market; else echo "::warning::Market explorer dataset missing; explorer views will show a notice."; fi
 
